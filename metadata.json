@@ -1,0 +1,8 @@
+{
+  "name": "DecDecRec Tool",
+  "description": "A minimalist, local-first screen recording and transcription utility with shorts-ready layouts and ZIP exports.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
