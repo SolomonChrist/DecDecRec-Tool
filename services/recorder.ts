@@ -9,10 +9,10 @@ export class VideoRecorder {
   private screenStream: MediaStream | null = null;
   private webcamStream: MediaStream | null = null;
   private audioStream: MediaStream | null = null;
-  private animationFrameId: number | null = null;
+  private renderInterval: number | null = null;
 
   public webcamPos = { x: 85, y: 85 }; // In percentage, default bottom right
-  public webcamSize = 200; // In pixels
+  public webcamSize = 240; // Default radius-based size for circular overlay
 
   private screenVideo: HTMLVideoElement = document.createElement('video');
   private webcamVideo: HTMLVideoElement = document.createElement('video');
@@ -23,9 +23,12 @@ export class VideoRecorder {
     if (!context) throw new Error('Could not get canvas context');
     this.ctx = context;
     
-    // Set some defaults so the canvas isn't 0x0 initially
+    // Initial size
     this.canvas.width = 1280;
     this.canvas.height = 720;
+
+    this.screenVideo.setAttribute('playsinline', '');
+    this.webcamVideo.setAttribute('playsinline', '');
   }
 
   public getCanvas(): HTMLCanvasElement {
@@ -43,7 +46,6 @@ export class VideoRecorder {
     const width = quality.resolution === '720p' ? 1280 : 1920;
     const height = quality.resolution === '720p' ? 720 : 1080;
 
-    // Adjust for vertical Shorts
     if (layout === 'SHORTS') {
       this.canvas.width = quality.resolution === '720p' ? 720 : 1080;
       this.canvas.height = quality.resolution === '720p' ? 1280 : 1920;
@@ -64,7 +66,7 @@ export class VideoRecorder {
 
       if (useWebcam) {
         this.webcamStream = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: webcamId ? { exact: webcamId } : undefined, width: 640, height: 480 },
+          video: { deviceId: webcamId ? { exact: webcamId } : undefined, width: 1280, height: 720 },
           audio: false
         });
         this.webcamVideo.srcObject = this.webcamStream;
@@ -72,7 +74,6 @@ export class VideoRecorder {
         await this.webcamVideo.play();
       }
 
-      // Audio Mixing
       const audioCtx = new AudioContext();
       const dest = audioCtx.createMediaStreamDestination();
       
@@ -102,77 +103,101 @@ export class VideoRecorder {
       };
 
       this.mediaRecorder.start(100);
-      this.renderLoop(layout);
+      
+      const frameDelay = 1000 / quality.fps;
+      this.renderInterval = window.setInterval(() => this.drawFrame(layout), frameDelay);
     } catch (err) {
       this.stop();
       throw err;
     }
   }
 
-  private renderLoop(layout: LayoutStyle) {
-    const draw = () => {
-      this.ctx.fillStyle = 'black';
-      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+  /**
+   * Helper to draw an image/video to fill a target area while maintaining aspect ratio (CSS 'object-fit: cover' style)
+   */
+  private drawCover(img: HTMLVideoElement, x: number, y: number, w: number, h: number) {
+    if (img.videoWidth === 0) return;
+    const imgAspect = img.videoWidth / img.videoHeight;
+    const targetAspect = w / h;
+    
+    let sWidth, sHeight, sx, sy;
+    
+    if (imgAspect > targetAspect) {
+      sHeight = img.videoHeight;
+      sWidth = img.videoHeight * targetAspect;
+      sx = (img.videoWidth - sWidth) / 2;
+      sy = 0;
+    } else {
+      sWidth = img.videoWidth;
+      sHeight = img.videoWidth / targetAspect;
+      sx = 0;
+      sy = (img.videoHeight - sHeight) / 2;
+    }
+    
+    this.ctx.drawImage(img, sx, sy, sWidth, sHeight, x, y, w, h);
+  }
 
-      if (layout === 'CIRCLE') {
-        // Draw screen full
-        this.ctx.drawImage(this.screenVideo, 0, 0, this.canvas.width, this.canvas.height);
-        
-        if (this.webcamStream) {
-          const cx = (this.webcamPos.x / 100) * this.canvas.width;
-          const cy = (this.webcamPos.y / 100) * this.canvas.height;
-          const radius = this.webcamSize / 2;
+  private drawFrame(layout: LayoutStyle) {
+    this.ctx.fillStyle = 'black';
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-          this.ctx.save();
-          this.ctx.beginPath();
-          this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-          this.ctx.clip();
-          // Adjust image to center inside the circle crop
-          this.ctx.drawImage(
-            this.webcamVideo,
-            cx - radius,
-            cy - radius,
-            this.webcamSize,
-            this.webcamSize
-          );
-          this.ctx.restore();
-          
-          this.ctx.strokeStyle = 'white';
-          this.ctx.lineWidth = 4;
-          this.ctx.stroke();
-        }
-      } else if (layout === 'SHORTS') {
-        const h = this.canvas.height;
-        const w = this.canvas.width;
-        
-        // Screen on Top (top 60%)
-        const screenH = h * 0.6;
-        this.ctx.drawImage(this.screenVideo, 0, 0, w, screenH);
-        
-        // Webcam on Bottom (bottom 40%)
-        if (this.webcamStream) {
-          this.ctx.drawImage(this.webcamVideo, 0, screenH, w, h - screenH);
-        }
+    if (layout === 'CIRCLE') {
+      this.ctx.drawImage(this.screenVideo, 0, 0, this.canvas.width, this.canvas.height);
+      
+      if (this.webcamStream) {
+        const cx = (this.webcamPos.x / 100) * this.canvas.width;
+        const cy = (this.webcamPos.y / 100) * this.canvas.height;
+        const radius = this.webcamSize / 2;
 
-        // Divider
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        this.ctx.clip();
+        this.drawCover(this.webcamVideo, cx - radius, cy - radius, this.webcamSize, this.webcamSize);
+        this.ctx.restore();
+        
         this.ctx.strokeStyle = 'white';
         this.ctx.lineWidth = 4;
-        this.ctx.beginPath();
-        this.ctx.moveTo(0, screenH);
-        this.ctx.lineTo(w, screenH);
         this.ctx.stroke();
       }
+    } else if (layout === 'SHORTS') {
+      const h = this.canvas.height;
+      const w = this.canvas.width;
+      
+      // Precise 50/50 split
+      const halfH = h / 2;
+      
+      // Top Half: Screen (Cropped to fit)
+      this.drawCover(this.screenVideo, 0, 0, w, halfH);
+      
+      // Bottom Half: Webcam (Cropped to fit)
+      if (this.webcamStream) {
+        this.drawCover(this.webcamVideo, 0, halfH, w, halfH);
+      } else {
+        // Fallback placeholder if webcam disabled
+        this.ctx.fillStyle = '#111';
+        this.ctx.fillRect(0, halfH, w, halfH);
+        this.ctx.fillStyle = '#333';
+        this.ctx.textAlign = 'center';
+        this.ctx.font = `${w * 0.05}px Arial`;
+        this.ctx.fillText('Webcam Disabled', w / 2, halfH + (halfH / 2));
+      }
 
-      this.animationFrameId = requestAnimationFrame(draw);
-    };
-    draw();
+      // Divider Line
+      this.ctx.strokeStyle = 'white';
+      this.ctx.lineWidth = 6;
+      this.ctx.beginPath();
+      this.ctx.moveTo(0, halfH);
+      this.ctx.lineTo(w, halfH);
+      this.ctx.stroke();
+    }
   }
 
   stop(): Blob | null {
     if (this.mediaRecorder) {
       this.mediaRecorder.stop();
     }
-    if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
+    if (this.renderInterval) clearInterval(this.renderInterval);
     
     this.screenStream?.getTracks().forEach(t => t.stop());
     this.webcamStream?.getTracks().forEach(t => t.stop());
@@ -183,6 +208,15 @@ export class VideoRecorder {
     return blob;
   }
 
-  pause() { this.mediaRecorder?.pause(); }
-  resume() { this.mediaRecorder?.resume(); }
+  pause() { 
+    this.mediaRecorder?.pause(); 
+    if (this.renderInterval) clearInterval(this.renderInterval);
+  }
+  
+  resume() { 
+    this.mediaRecorder?.resume(); 
+    // Resume drawing loop (assuming circle layout if undefined, typically state managed in App)
+    const frameDelay = 33; 
+    this.renderInterval = window.setInterval(() => this.drawFrame('CIRCLE'), frameDelay); 
+  }
 }

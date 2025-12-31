@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Video, 
   Library, 
@@ -66,6 +66,19 @@ const App: React.FC = () => {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const isDraggingWebcam = useRef(false);
 
+  // Memoized object URL for the preview modal to prevent flickering and memory leaks
+  const previewUrl = useMemo(() => {
+    if (!previewingSession) return null;
+    return URL.createObjectURL(previewingSession.videoBlob);
+  }, [previewingSession]);
+
+  // Cleanup effect for preview URL
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
   useEffect(() => {
     loadSessions();
     loadDevices();
@@ -75,15 +88,15 @@ const App: React.FC = () => {
     if (storedSettings) setTranscriptionSettings(JSON.parse(storedSettings));
   }, []);
 
-  // Sync canvas to DOM
+  // Sync canvas to DOM for live preview
   useEffect(() => {
     if (isRecording && recorderRef.current && canvasContainerRef.current) {
       const canvas = recorderRef.current.getCanvas();
-      canvas.className = "w-full h-full object-contain cursor-move";
+      canvas.className = "w-full h-full object-contain cursor-move rounded-sm shadow-2xl";
       canvasContainerRef.current.innerHTML = '';
       canvasContainerRef.current.appendChild(canvas);
     }
-  }, [isRecording]);
+  }, [isRecording, layout]);
 
   const checkPermissions = async () => {
     try {
@@ -310,7 +323,7 @@ const App: React.FC = () => {
         <div className="max-w-6xl mx-auto flex justify-between items-center">
           <h1 className="text-xl font-bold tracking-tighter flex items-center gap-2">
             <Monitor className="w-6 h-6" />
-            AI SCREEN RECORDER
+            DecDecRec Tool
           </h1>
           <nav className="flex gap-4">
             <button 
@@ -376,6 +389,13 @@ const App: React.FC = () => {
                         </button>
                       </div>
                     </div>
+                  </div>
+                )}
+                
+                {isRecording && (
+                  <div className="p-3 bg-blue-900/20 border border-blue-500/30 text-blue-100 text-[10px] flex gap-2 items-center italic">
+                    <Info className="w-4 h-4 shrink-0 text-blue-400" />
+                    <p>Keep this tab visible and active to ensure high-quality, smooth video recording.</p>
                   </div>
                 )}
               </section>
@@ -497,11 +517,11 @@ const App: React.FC = () => {
 
             {/* Preview Panel / Storage Info */}
             <div className="space-y-6">
-              <section className="border border-white/20 aspect-video flex items-center justify-center relative bg-white/5 overflow-hidden">
+              <section className={`border border-white/20 flex items-center justify-center relative bg-white/5 overflow-hidden ${layout === 'SHORTS' ? 'aspect-[9/16] max-h-[600px] mx-auto' : 'aspect-video'}`}>
                 {!isRecording ? (
                   <div className="text-center text-white/20 flex flex-col items-center p-6">
                     <div className="relative mb-2">
-                      <Camera className="w-16 h-16 opacity-10" />
+                      {layout === 'SHORTS' ? <RectangleVertical className="w-16 h-16 opacity-10" /> : <Camera className="w-16 h-16 opacity-10" />}
                       {permissions.camera === 'denied' && (
                         <XCircle className="w-6 h-6 text-red-500 absolute -top-1 -right-1" />
                       )}
@@ -578,7 +598,7 @@ const App: React.FC = () => {
         {activeTab === 'library' && (
           <div className="space-y-6">
             <div className="flex justify-between items-center">
-              <h2 className="text-2xl font-bold uppercase tracking-tight">Library</h2>
+              <h2 className="text-2xl font-bold uppercase tracking-tight text-white/80">Library</h2>
               <button 
                 onClick={async () => {
                   if(confirm("Wipe ALL local sessions?")) {
@@ -600,69 +620,14 @@ const App: React.FC = () => {
             ) : (
               <div className="grid gap-4">
                 {sessions.map(session => (
-                  <div key={session.id} className="border border-white/20 p-6 flex flex-col md:flex-row gap-6 items-start hover:border-white/40 transition-colors bg-white/[0.02]">
-                    <div 
-                      className="aspect-video bg-black w-full md:w-64 flex items-center justify-center relative group cursor-pointer overflow-hidden border border-white/10"
-                      onClick={() => setPreviewingSession(session)}
-                    >
-                      <video 
-                        className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity" 
-                        src={URL.createObjectURL(session.videoBlob)} 
-                        muted
-                        loop
-                        onMouseOver={(e) => e.currentTarget.play()}
-                        onMouseOut={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
-                      />
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                         <Play className="w-10 h-10 text-white" />
-                      </div>
-                      <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 font-mono border border-white/10">
-                        {formatDuration(session.durationSeconds)}
-                      </span>
-                    </div>
-                    <div className="flex-grow space-y-2 w-full">
-                      <div className="flex justify-between items-start">
-                        <div className="space-y-1">
-                          <h3 className="font-mono text-lg font-bold tracking-tight">{session.id}</h3>
-                          <p className="text-[10px] text-white/40 font-mono uppercase">
-                            Captured on {new Date(session.createdAtISO).toLocaleString()}
-                          </p>
-                        </div>
-                        <div className="flex gap-2">
-                          <button 
-                            onClick={() => handleDownload(session)}
-                            className="p-2 border border-white/20 hover:bg-white hover:text-black transition-all hover:scale-105"
-                            title="Download WebM"
-                          >
-                            <Download className="w-4 h-4" />
-                          </button>
-                          <button 
-                            onClick={() => handleDeleteSession(session.id)}
-                            className="p-2 border border-red-600/50 text-red-500 hover:bg-red-600 hover:text-white transition-all hover:scale-105"
-                            title="Delete"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-4 text-xs text-white/50 uppercase tracking-widest font-bold pt-2">
-                         <span className="flex items-center gap-1 bg-white/5 px-2 py-0.5 rounded-sm"><Monitor className="w-3 h-3" /> {session.layoutStyle}</span>
-                         <span className="bg-white/5 px-2 py-0.5 rounded-sm">{session.quality.resolution}</span>
-                         <span className="bg-white/5 px-2 py-0.5 rounded-sm">{session.quality.fps} FPS</span>
-                      </div>
-                      <div className="flex gap-2 pt-4">
-                         <button className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors uppercase font-bold tracking-tighter">
-                            <FileText className="w-3 h-3" /> Transcribe
-                         </button>
-                         <button 
-                          onClick={() => setPreviewingSession(session)}
-                          className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors uppercase font-bold tracking-tighter"
-                         >
-                            <Maximize2 className="w-3 h-3" /> View Large
-                         </button>
-                      </div>
-                    </div>
-                  </div>
+                  <LibraryCard 
+                    key={session.id} 
+                    session={session} 
+                    onDownload={handleDownload} 
+                    onDelete={handleDeleteSession} 
+                    onPreview={setPreviewingSession}
+                    formatDuration={formatDuration}
+                  />
                 ))}
               </div>
             )}
@@ -670,35 +635,39 @@ const App: React.FC = () => {
         )}
 
         {/* Preview Modal */}
-        {previewingSession && (
+        {previewingSession && previewUrl && (
           <div className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4 backdrop-blur-sm">
-             <div className="max-w-6xl w-full bg-black border border-white/20 flex flex-col max-h-[90vh]">
+             <div className="max-w-6xl w-full bg-black border border-white/20 flex flex-col max-h-[95vh] shadow-2xl relative">
                 <div className="p-4 border-b border-white/20 flex justify-between items-center bg-white/[0.02]">
-                   <h3 className="font-mono text-sm font-bold">{previewingSession.id}</h3>
+                   <h3 className="font-mono text-sm font-bold truncate pr-4">{previewingSession.id}</h3>
                    <button 
                     onClick={() => setPreviewingSession(null)}
-                    className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                    className="p-2 hover:bg-white/10 rounded-full transition-colors shrink-0"
                    >
                      <X className="w-5 h-5" />
                    </button>
                 </div>
-                <div className="flex-grow flex items-center justify-center p-2 bg-black overflow-hidden">
+                <div className="flex-grow flex items-center justify-center p-4 bg-black overflow-hidden relative">
                    <video 
-                    src={URL.createObjectURL(previewingSession.videoBlob)} 
+                    src={previewUrl} 
                     controls 
                     autoPlay
-                    className="max-w-full max-h-full object-contain"
+                    className="max-w-full max-h-full shadow-2xl bg-black rounded-sm border border-white/5"
+                    style={{ 
+                      objectFit: 'contain',
+                      aspectRatio: previewingSession.layoutStyle === 'SHORTS' ? '9/16' : '16/9'
+                    }}
                    />
                 </div>
-                <div className="p-4 border-t border-white/20 flex gap-4 bg-white/[0.02]">
+                <div className="p-4 border-t border-white/20 flex flex-col sm:flex-row gap-4 bg-white/[0.02]">
                    <button 
                     onClick={() => handleDownload(previewingSession)}
                     className="flex-1 py-3 bg-white text-black font-black uppercase flex items-center justify-center gap-2 hover:bg-gray-200 transition-colors"
                    >
-                      <Download className="w-5 h-5" /> Download Recording
+                      <Download className="w-5 h-5" /> Download WebM
                    </button>
                    <button 
-                    className="flex-1 py-3 border border-white/20 font-black uppercase flex items-center justify-center gap-2 hover:bg-white/10 transition-colors"
+                    className="flex-1 py-3 border border-white/20 font-black uppercase flex items-center justify-center gap-2 hover:bg-white/10 transition-colors opacity-50 cursor-not-allowed"
                    >
                       <FileText className="w-5 h-5" /> Run AI Transcription
                    </button>
@@ -828,6 +797,87 @@ const App: React.FC = () => {
           </a>
         </div>
       </footer>
+    </div>
+  );
+};
+
+// Helper component to manage object URLs for video cards in the library
+const LibraryCard: React.FC<{
+  session: RecordingSession;
+  onDownload: (s: RecordingSession) => void;
+  onDelete: (id: string) => void;
+  onPreview: (s: RecordingSession) => void;
+  formatDuration: (s: number) => string;
+}> = ({ session, onDownload, onDelete, onPreview, formatDuration }) => {
+  const videoUrl = useMemo(() => URL.createObjectURL(session.videoBlob), [session.videoBlob]);
+
+  useEffect(() => {
+    return () => URL.revokeObjectURL(videoUrl);
+  }, [videoUrl]);
+
+  return (
+    <div className="border border-white/20 p-6 flex flex-col md:flex-row gap-6 items-start hover:border-white/40 transition-colors bg-white/[0.02] group/card">
+      <div 
+        className={`bg-black w-full md:w-64 flex items-center justify-center relative group cursor-pointer overflow-hidden border border-white/10 shadow-lg ${session.layoutStyle === 'SHORTS' ? 'aspect-[9/16]' : 'aspect-video'}`}
+        onClick={() => onPreview(session)}
+      >
+        <video 
+          className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity" 
+          src={videoUrl} 
+          muted
+          loop
+          onMouseOver={(e) => e.currentTarget.play()}
+          onMouseOut={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
+        />
+        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+            <Play className="w-10 h-10 text-white fill-white/20" />
+        </div>
+        <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 font-mono border border-white/10">
+          {formatDuration(session.durationSeconds)}
+        </span>
+      </div>
+      <div className="flex-grow space-y-2 w-full">
+        <div className="flex justify-between items-start">
+          <div className="space-y-1">
+            <h3 className="font-mono text-lg font-bold tracking-tight">{session.id}</h3>
+            <p className="text-[10px] text-white/40 font-mono uppercase">
+              Captured on {new Date(session.createdAtISO).toLocaleString()}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => onDownload(session)}
+              className="p-2 border border-white/20 hover:bg-white hover:text-black transition-all hover:scale-110 active:scale-95"
+              title="Download WebM"
+            >
+              <Download className="w-4 h-4" />
+            </button>
+            <button 
+              onClick={() => onDelete(session.id)}
+              className="p-2 border border-red-600/50 text-red-500 hover:bg-red-600 hover:text-white transition-all hover:scale-110 active:scale-95"
+              title="Delete"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-4 text-xs text-white/50 uppercase tracking-widest font-bold pt-2">
+            <span className="flex items-center gap-1 bg-white/5 px-2 py-0.5 rounded-sm"><Monitor className="w-3 h-3" /> {session.layoutStyle}</span>
+            <span className="bg-white/5 px-2 py-0.5 rounded-sm">{session.quality.resolution}</span>
+            <span className="bg-white/5 px-2 py-0.5 rounded-sm">{session.quality.fps} FPS</span>
+        </div>
+        <div className="flex gap-2 pt-4">
+            <button className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors uppercase font-bold tracking-tighter opacity-40 cursor-not-allowed">
+              <FileText className="w-3 h-3" /> Transcribe
+            </button>
+            <button 
+            onClick={() => onPreview(session)}
+            className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors uppercase font-bold tracking-tighter"
+            >
+              <Maximize2 className="w-3 h-3" /> Full View
+            </button>
+        </div>
+      </div>
     </div>
   );
 };
