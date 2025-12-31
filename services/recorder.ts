@@ -32,10 +32,21 @@ export class VideoRecorder {
 
     this.screenVideo.setAttribute('playsinline', '');
     this.webcamVideo.setAttribute('playsinline', '');
+    
+    // Ensure videos play when ready to prevent freezing
+    this.screenVideo.onloadedmetadata = () => this.screenVideo.play().catch(console.error);
+    this.webcamVideo.onloadedmetadata = () => this.webcamVideo.play().catch(console.error);
   }
 
   public getCanvas(): HTMLCanvasElement {
     return this.canvas;
+  }
+
+  public updateWebcamPos(x: number, y: number) {
+    this.webcamPos = { 
+      x: Math.max(0, Math.min(100, x)), 
+      y: Math.max(0, Math.min(100, y)) 
+    };
   }
 
   async start(
@@ -65,8 +76,12 @@ export class VideoRecorder {
         audio: captureSystemAudio
       });
       
+      // Handle "Stop Sharing" button in browser UI
+      this.screenStream.getTracks()[0].onended = () => {
+        // We could trigger a stop here, but usually users just want to stop sharing
+      };
+
       this.screenVideo.srcObject = this.screenStream;
-      this.screenVideo.muted = true;
       await this.screenVideo.play();
 
       if (useWebcam) {
@@ -75,11 +90,10 @@ export class VideoRecorder {
           audio: false
         });
         this.webcamVideo.srcObject = this.webcamStream;
-        this.webcamVideo.muted = true;
         await this.webcamVideo.play();
       }
 
-      const audioCtx = new AudioContext();
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       const dest = audioCtx.createMediaStreamDestination();
       
       const micStream = await navigator.mediaDevices.getUserMedia({
@@ -122,16 +136,21 @@ export class VideoRecorder {
     const elapsed = now - this.lastFrameTime;
     const interval = 1000 / this.targetFps;
 
-    if (elapsed >= interval) {
-      this.drawFrame(this.currentLayout);
-      this.lastFrameTime = now - (elapsed % interval);
+    // Use a try-catch to ensure one failed frame doesn't kill the whole loop
+    try {
+      if (elapsed >= interval) {
+        this.drawFrame(this.currentLayout);
+        this.lastFrameTime = now - (elapsed % interval);
+      }
+    } catch (e) {
+      console.error("Frame render error:", e);
     }
     
     this.animationFrameId = requestAnimationFrame(this.renderLoop);
   }
 
   private drawCover(img: HTMLVideoElement, x: number, y: number, w: number, h: number) {
-    if (img.videoWidth === 0) return;
+    if (img.videoWidth === 0 || img.readyState < 2) return;
     const imgAspect = img.videoWidth / img.videoHeight;
     const targetAspect = w / h;
     
@@ -157,9 +176,11 @@ export class VideoRecorder {
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
     if (layout === 'CIRCLE') {
-      this.ctx.drawImage(this.screenVideo, 0, 0, this.canvas.width, this.canvas.height);
+      if (this.screenVideo.readyState >= 2) {
+        this.ctx.drawImage(this.screenVideo, 0, 0, this.canvas.width, this.canvas.height);
+      }
       
-      if (this.webcamStream) {
+      if (this.webcamStream && this.webcamVideo.readyState >= 2) {
         const cx = (this.webcamPos.x / 100) * this.canvas.width;
         const cy = (this.webcamPos.y / 100) * this.canvas.height;
         const radius = this.webcamSize / 2;

@@ -188,18 +188,6 @@ const App: React.FC = () => {
     }
   };
 
-  const requestPersistentStorage = async () => {
-    if (navigator.storage && navigator.storage.persist) {
-      const granted = await navigator.storage.persist();
-      if (granted) {
-        updateStorageEstimate();
-        alert("Persistent storage granted!");
-      } else {
-        alert("Persistent storage denied.");
-      }
-    }
-  };
-
   const formatTimestamp = () => {
     const now = new Date();
     return `${now.getDate().toString().padStart(2, '0')}-${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][now.getMonth()]}-${now.getFullYear()}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}-${now.getSeconds().toString().padStart(2, '0')}`;
@@ -289,6 +277,23 @@ const App: React.FC = () => {
     }
   };
 
+  const handleClearAll = async () => {
+    if (confirm("Delete ALL recorded sessions? This cannot be undone.")) {
+      await clearAllSessions();
+      loadSessions();
+      updateStorageEstimate();
+    }
+  };
+
+  // Webcam Draggable Logic
+  const handlePreviewMouseMove = (e: React.MouseEvent) => {
+    if (!isRecording || !recorderRef.current || !isDraggingWebcam.current || !canvasContainerRef.current) return;
+    const rect = canvasContainerRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    recorderRef.current.updateWebcamPos(x, y);
+  };
+
   return (
     <div className="flex flex-col min-h-screen">
       {/* Header */}
@@ -340,7 +345,7 @@ const App: React.FC = () => {
                 {isRecording && (
                   <div className="p-3 bg-blue-900/20 border border-blue-500/30 text-blue-100 text-[10px] flex gap-2 items-center italic">
                     <Info className="w-4 h-4 shrink-0 text-blue-400" />
-                    <p>Keep this tab active to ensure high-quality, smooth video recording.</p>
+                    <p>Click & drag the webcam circle in the preview to move it.</p>
                   </div>
                 )}
               </section>
@@ -360,7 +365,7 @@ const App: React.FC = () => {
                 </div>
               </section>
 
-              {/* Device Setup (Restored Section) */}
+              {/* Device Setup */}
               <section className="border border-white/20 p-6 space-y-4">
                 <div className="flex justify-between items-center border-b border-white/10 pb-2">
                   <h2 className="text-lg font-bold">Device Setup</h2>
@@ -445,15 +450,22 @@ const App: React.FC = () => {
 
             {/* Preview Panel */}
             <div className="space-y-6">
-              <section className={`border border-white/20 flex items-center justify-center relative bg-white/5 overflow-hidden ${layout === 'SHORTS' ? 'aspect-[9/16] max-h-[600px] mx-auto' : 'aspect-video'}`}>
+              <section 
+                className={`border border-white/20 flex items-center justify-center relative bg-white/5 overflow-hidden ${layout === 'SHORTS' ? 'aspect-[9/16] max-h-[600px] mx-auto' : 'aspect-video'}`}
+                onMouseDown={() => (isDraggingWebcam.current = true)}
+                onMouseUp={() => (isDraggingWebcam.current = false)}
+                onMouseLeave={() => (isDraggingWebcam.current = false)}
+                onMouseMove={handlePreviewMouseMove}
+              >
                 {isRecording ? (
-                  <div ref={canvasContainerRef} className="w-full h-full flex items-center justify-center bg-black select-none"></div>
+                  <div ref={canvasContainerRef} className="w-full h-full flex items-center justify-center bg-black select-none pointer-events-none"></div>
                 ) : (
                   <div className="text-center text-white/20 flex flex-col items-center p-6">
                     <Monitor className="w-16 h-16 opacity-10 mb-2" />
                     <p className="text-sm font-bold uppercase tracking-widest opacity-50">Live Preview</p>
                   </div>
                 )}
+                {isRecording && <div className="absolute inset-0 z-10 cursor-move opacity-0"></div>}
               </section>
             </div>
           </div>
@@ -461,7 +473,14 @@ const App: React.FC = () => {
 
         {activeTab === 'library' && (
           <div className="space-y-6">
-            <h2 className="text-2xl font-bold uppercase tracking-tight text-white/80">Library</h2>
+            <div className="flex justify-between items-end">
+              <h2 className="text-2xl font-bold uppercase tracking-tight text-white/80">Library</h2>
+              {sessions.length > 0 && (
+                <button onClick={handleClearAll} className="text-[10px] font-bold text-red-500 hover:text-red-400 flex items-center gap-1 transition-colors underline uppercase tracking-widest">
+                  <Trash2 className="w-3 h-3" /> Clear Library
+                </button>
+              )}
+            </div>
             {sessions.length === 0 ? (
               <div className="border border-white/10 p-20 text-center text-white/20">
                 <Database className="w-16 h-16 mx-auto mb-4 opacity-5" />
@@ -490,7 +509,7 @@ const App: React.FC = () => {
              <div className="max-w-6xl w-full bg-black border border-white/20 flex flex-col max-h-[95vh] shadow-2xl relative">
                 <div className="p-4 border-b border-white/20 flex justify-between items-center bg-white/[0.02]">
                    <h3 className="font-mono text-sm font-bold truncate pr-4">{previewingSession.id}</h3>
-                   <button onClick={() => setPreviewingSession(null)} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X className="w-5 h-5" /></button>
+                   <button onClick={() => setPreviewingSession(null)} className="p-2 rounded-full transition-colors"><X className="w-5 h-5" /></button>
                 </div>
                 <div className="flex-grow flex items-center justify-center p-4 bg-black overflow-hidden relative">
                    <video src={previewUrl} controls autoPlay className="max-w-full max-h-full" style={{ objectFit: 'contain' }} />
@@ -538,13 +557,13 @@ const VideoEditor: React.FC<{
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
-
   const videoUrl = useMemo(() => URL.createObjectURL(session.videoBlob), [session.videoBlob]);
 
   useEffect(() => {
-    return () => URL.revokeObjectURL(videoUrl);
+    return () => {
+      if (videoUrl) URL.revokeObjectURL(videoUrl);
+    };
   }, [videoUrl]);
 
   // Handle 's' key for splitting
@@ -559,20 +578,20 @@ const VideoEditor: React.FC<{
   }, [currentTime, segments]);
 
   const splitSegment = () => {
-    const totalDurationBefore = segments.reduce((acc, s, idx) => {
-      if (idx < segments.length) {
-        const cumulative = segments.slice(0, idx).reduce((sum, seg) => sum + seg.duration, 0);
-        if (currentTime > cumulative && currentTime < cumulative + s.duration) {
-          const splitAtSourceTime = s.start + (currentTime - cumulative);
-          const newSegments = [...segments];
-          const firstPart = { ...s, end: splitAtSourceTime, duration: splitAtSourceTime - s.start };
-          const secondPart = { id: Math.random().toString(), start: splitAtSourceTime, end: s.end, duration: s.end - splitAtSourceTime };
-          newSegments.splice(idx, 1, firstPart, secondPart);
-          setSegments(newSegments);
-        }
+    let cumulative = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const s = segments[i];
+      if (currentTime > cumulative && currentTime < cumulative + s.duration) {
+        const splitAtSourceTime = s.start + (currentTime - cumulative);
+        const newSegments = [...segments];
+        const firstPart = { ...s, end: splitAtSourceTime, duration: splitAtSourceTime - s.start };
+        const secondPart = { id: Math.random().toString(), start: splitAtSourceTime, end: s.end, duration: s.end - splitAtSourceTime };
+        newSegments.splice(i, 1, firstPart, secondPart);
+        setSegments(newSegments);
+        break;
       }
-      return acc;
-    }, 0);
+      cumulative += s.duration;
+    }
   };
 
   const handleTimelineClick = (e: React.MouseEvent) => {
@@ -580,7 +599,7 @@ const VideoEditor: React.FC<{
     const rect = timelineRef.current.getBoundingClientRect();
     const totalDuration = segments.reduce((sum, s) => sum + s.duration, 0);
     const pos = (e.clientX - rect.left) / rect.width;
-    const newTime = pos * totalDuration;
+    const newTime = Math.max(0, Math.min(totalDuration, pos * totalDuration));
     setCurrentTime(newTime);
     updateVideoTime(newTime);
   };
@@ -612,26 +631,26 @@ const VideoEditor: React.FC<{
     if (!videoRef.current || isExporting) return;
     const v = videoRef.current;
     let cumulative = 0;
-    let found = false;
-    for (const seg of segments) {
-      if (v.currentTime >= seg.start && v.currentTime <= seg.end) {
-        setCurrentTime(cumulative + (v.currentTime - seg.start));
-        found = true;
-        break;
+    
+    // Calculate current time in "editor timeline" space
+    const currentSegment = segments.find((seg, idx) => {
+      const startOfSeg = segments.slice(0, idx).reduce((acc, s) => acc + s.duration, 0);
+      const isWithinSource = v.currentTime >= seg.start && v.currentTime <= seg.end;
+      if (isWithinSource) {
+        cumulative = startOfSeg;
       }
-      cumulative += seg.duration;
-    }
-    // If playhead exceeds segment, jump to next or pause
-    if (isPlaying) {
-      const currentSegment = segments.find((_, i) => {
-        const start = segments.slice(0, i).reduce((sum, s) => sum + s.duration, 0);
-        return currentTime >= start && currentTime < start + segments[i].duration;
-      });
-      if (currentSegment && v.currentTime >= currentSegment.end) {
+      return isWithinSource;
+    });
+
+    if (currentSegment) {
+      setCurrentTime(cumulative + (v.currentTime - currentSegment.start));
+      
+      // If we hit the end of current segment part, jump to next or pause
+      if (v.currentTime >= currentSegment.end - 0.1) {
         const idx = segments.indexOf(currentSegment);
         if (idx < segments.length - 1) {
           v.currentTime = segments[idx + 1].start;
-        } else {
+        } else if (isPlaying) {
           v.pause();
           setIsPlaying(false);
         }
@@ -642,11 +661,16 @@ const VideoEditor: React.FC<{
   const exportVideo = async () => {
     setIsExporting(true);
     setIsPlaying(false);
+    
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d')!;
     const video = videoRef.current!;
     
-    // Use session quality or video dimensions
+    // Ensure video is loaded
+    if (video.videoWidth === 0) {
+      await new Promise(r => video.onloadedmetadata = r);
+    }
+
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
@@ -654,29 +678,34 @@ const VideoEditor: React.FC<{
     const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => chunks.push(e.data);
+    
     recorder.start();
 
+    // Iterate segments and "draw" them to the canvas sequentially
     for (const seg of segments) {
       video.currentTime = seg.start;
       await new Promise(r => video.onseeked = r);
       
-      const frames = seg.duration * 30;
+      const frames = Math.floor(seg.duration * 30);
       for (let i = 0; i < frames; i++) {
         video.currentTime = seg.start + (i / 30);
-        await new Promise(r => setTimeout(r, 10)); // tiny delay to allow frame updates
-        ctx.drawImage(video, 0, 0);
+        // Small wait for browser to render seeked frame
+        await new Promise(r => setTimeout(r, 16)); 
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       }
     }
 
-    recorder.stop();
-    recorder.onstop = async () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      await onSave(blob);
-      setIsExporting(false);
-    };
+    // Stop and get final blob
+    setTimeout(() => {
+      recorder.stop();
+      recorder.onstop = async () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        await onSave(blob);
+        setIsExporting(false);
+      };
+    }, 500);
   };
 
-  // Drag and Drop Logic
   const handleDragStart = (idx: number) => setDraggedIndex(idx);
   const handleDragOver = (e: React.DragEvent, idx: number) => {
     e.preventDefault();
@@ -698,25 +727,25 @@ const VideoEditor: React.FC<{
           <h2 className="text-xl font-bold uppercase tracking-tighter">Video Editor: {session.id}</h2>
         </div>
         <div className="flex gap-2">
-           <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X className="w-6 h-6" /></button>
+           <button onClick={onClose} className="p-2 rounded-full transition-colors"><X className="w-6 h-6" /></button>
         </div>
       </div>
 
       <div className="flex-grow flex flex-col md:flex-row gap-6 overflow-hidden">
         {/* Preview Area */}
-        <div className="flex-grow bg-black/40 border border-white/10 flex flex-col overflow-hidden relative group">
-          <div className="flex-grow flex items-center justify-center relative overflow-hidden">
+        <div className="flex-grow bg-white/5 border border-white/10 flex flex-col overflow-hidden relative">
+          <div className="flex-grow flex items-center justify-center relative overflow-hidden bg-black">
             <video 
               ref={videoRef} 
               src={videoUrl} 
               onTimeUpdate={handleTimeUpdate}
-              className="max-w-full max-h-full"
+              className="max-w-full max-h-full block opacity-100"
+              style={{ objectFit: 'contain' }}
             />
             {isExporting && (
               <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center z-50">
                 <Loader2 className="w-12 h-12 animate-spin mb-4" />
-                <p className="font-bold uppercase tracking-widest text-sm">Rendering Edited Output...</p>
-                <p className="text-[10px] text-white/40 mt-2">Processing each segment onto the compositor canvas</p>
+                <p className="font-bold uppercase tracking-widest text-sm">Rendering Final Video...</p>
               </div>
             )}
           </div>
@@ -731,13 +760,13 @@ const VideoEditor: React.FC<{
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold text-white/40 bg-white/5 px-2 py-1 rounded">PRESS 'S' TO SPLIT AT PLAYHEAD</span>
+              <span className="text-[10px] font-bold text-white/40 bg-white/5 px-2 py-1 rounded">S = SPLIT</span>
               <button 
                 onClick={exportVideo} 
                 disabled={isExporting}
                 className="px-6 py-2 bg-white text-black font-black uppercase tracking-widest hover:bg-gray-200 transition-colors flex items-center gap-2"
               >
-                <Save className="w-4 h-4" /> Export Edited
+                <Save className="w-4 h-4" /> Save Final
               </button>
             </div>
           </div>
@@ -787,20 +816,17 @@ const VideoEditor: React.FC<{
           onClick={handleTimelineClick}
           className="w-full h-12 bg-white/10 relative cursor-pointer group"
         >
-          {/* Segment Blocks */}
           <div className="absolute inset-0 flex">
             {segments.map((seg, idx) => (
               <div 
                 key={seg.id} 
                 style={{ width: `${(seg.duration / totalEditorDuration) * 100}%` }}
-                className={`h-full border-r border-black/40 relative group/seg ${idx % 2 === 0 ? 'bg-white/5' : 'bg-white/[0.08]'}`}
+                className={`h-full border-r border-black/40 relative ${idx % 2 === 0 ? 'bg-white/5' : 'bg-white/[0.08]'}`}
               >
                 <div className="absolute top-1 left-1 text-[8px] font-bold text-white/20 uppercase tracking-tighter">Seg {idx + 1}</div>
               </div>
             ))}
           </div>
-
-          {/* Playhead */}
           <div 
             style={{ left: `${(currentTime / totalEditorDuration) * 100}%` }}
             className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10 shadow-[0_0_10px_rgba(239,68,68,0.8)]"
@@ -810,7 +836,7 @@ const VideoEditor: React.FC<{
         </div>
         <div className="flex justify-between text-[10px] font-mono text-white/20 uppercase">
           <span>00:00.0</span>
-          <span>Timeline Overview ({totalEditorDuration.toFixed(1)}s total)</span>
+          <span>Timeline Overview ({totalEditorDuration.toFixed(1)}s)</span>
           <span>{formatDuration(totalEditorDuration)}</span>
         </div>
       </div>
@@ -843,7 +869,7 @@ const LibraryCard: React.FC<{
           src={videoUrl} 
           muted
           loop
-          onMouseOver={(e) => e.currentTarget.play()}
+          onMouseOver={(e) => e.currentTarget.play().catch(() => {})}
           onMouseOut={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
         />
         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
@@ -864,14 +890,14 @@ const LibraryCard: React.FC<{
           <div className="flex gap-2">
             <button 
               onClick={() => onDownload(session)}
-              className="p-2 border border-white/20 hover:bg-white hover:text-black transition-all hover:scale-110 active:scale-95"
+              className="p-2 border border-white/20 hover:bg-white hover:text-black transition-all"
               title="Download WebM"
             >
               <Download className="w-4 h-4" />
             </button>
             <button 
               onClick={() => onDelete(session.id)}
-              className="p-2 border border-red-600/50 text-red-500 hover:bg-red-600 hover:text-white transition-all hover:scale-110 active:scale-95"
+              className="p-2 border border-red-600/50 text-red-500 hover:bg-red-600 hover:text-white transition-all"
               title="Delete"
             >
               <Trash2 className="w-4 h-4" />
