@@ -9,10 +9,13 @@ export class VideoRecorder {
   private screenStream: MediaStream | null = null;
   private webcamStream: MediaStream | null = null;
   private audioStream: MediaStream | null = null;
-  private renderInterval: number | null = null;
+  private animationFrameId: number | null = null;
+  private lastFrameTime: number = 0;
+  private targetFps: number = 30;
+  private currentLayout: LayoutStyle = 'CIRCLE';
 
   public webcamPos = { x: 85, y: 85 }; // In percentage, default bottom right
-  public webcamSize = 240; // Default radius-based size for circular overlay
+  public webcamSize = 240; // Diameter for circular overlay
 
   private screenVideo: HTMLVideoElement = document.createElement('video');
   private webcamVideo: HTMLVideoElement = document.createElement('video');
@@ -23,7 +26,7 @@ export class VideoRecorder {
     if (!context) throw new Error('Could not get canvas context');
     this.ctx = context;
     
-    // Initial size
+    // Default 16:9 init
     this.canvas.width = 1280;
     this.canvas.height = 720;
 
@@ -45,6 +48,8 @@ export class VideoRecorder {
   ): Promise<void> {
     const width = quality.resolution === '720p' ? 1280 : 1920;
     const height = quality.resolution === '720p' ? 720 : 1080;
+    this.targetFps = quality.fps;
+    this.currentLayout = layout;
 
     if (layout === 'SHORTS') {
       this.canvas.width = quality.resolution === '720p' ? 720 : 1080;
@@ -104,17 +109,27 @@ export class VideoRecorder {
 
       this.mediaRecorder.start(100);
       
-      const frameDelay = 1000 / quality.fps;
-      this.renderInterval = window.setInterval(() => this.drawFrame(layout), frameDelay);
+      this.lastFrameTime = performance.now();
+      this.renderLoop();
     } catch (err) {
       this.stop();
       throw err;
     }
   }
 
-  /**
-   * Helper to draw an image/video to fill a target area while maintaining aspect ratio (CSS 'object-fit: cover' style)
-   */
+  private renderLoop = (time?: number) => {
+    const now = time || performance.now();
+    const elapsed = now - this.lastFrameTime;
+    const interval = 1000 / this.targetFps;
+
+    if (elapsed >= interval) {
+      this.drawFrame(this.currentLayout);
+      this.lastFrameTime = now - (elapsed % interval);
+    }
+    
+    this.animationFrameId = requestAnimationFrame(this.renderLoop);
+  }
+
   private drawCover(img: HTMLVideoElement, x: number, y: number, w: number, h: number) {
     if (img.videoWidth === 0) return;
     const imgAspect = img.videoWidth / img.videoHeight;
@@ -163,27 +178,14 @@ export class VideoRecorder {
     } else if (layout === 'SHORTS') {
       const h = this.canvas.height;
       const w = this.canvas.width;
-      
-      // Precise 50/50 split
       const halfH = h / 2;
-      
-      // Top Half: Screen (Cropped to fit)
       this.drawCover(this.screenVideo, 0, 0, w, halfH);
-      
-      // Bottom Half: Webcam (Cropped to fit)
       if (this.webcamStream) {
         this.drawCover(this.webcamVideo, 0, halfH, w, halfH);
       } else {
-        // Fallback placeholder if webcam disabled
         this.ctx.fillStyle = '#111';
         this.ctx.fillRect(0, halfH, w, halfH);
-        this.ctx.fillStyle = '#333';
-        this.ctx.textAlign = 'center';
-        this.ctx.font = `${w * 0.05}px Arial`;
-        this.ctx.fillText('Webcam Disabled', w / 2, halfH + (halfH / 2));
       }
-
-      // Divider Line
       this.ctx.strokeStyle = 'white';
       this.ctx.lineWidth = 6;
       this.ctx.beginPath();
@@ -197,7 +199,7 @@ export class VideoRecorder {
     if (this.mediaRecorder) {
       this.mediaRecorder.stop();
     }
-    if (this.renderInterval) clearInterval(this.renderInterval);
+    if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
     
     this.screenStream?.getTracks().forEach(t => t.stop());
     this.webcamStream?.getTracks().forEach(t => t.stop());
@@ -210,13 +212,12 @@ export class VideoRecorder {
 
   pause() { 
     this.mediaRecorder?.pause(); 
-    if (this.renderInterval) clearInterval(this.renderInterval);
+    if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
   }
   
   resume() { 
     this.mediaRecorder?.resume(); 
-    // Resume drawing loop (assuming circle layout if undefined, typically state managed in App)
-    const frameDelay = 33; 
-    this.renderInterval = window.setInterval(() => this.drawFrame('CIRCLE'), frameDelay); 
+    this.lastFrameTime = performance.now();
+    this.renderLoop();
   }
 }

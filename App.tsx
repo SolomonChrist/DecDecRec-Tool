@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   Video, 
   Library, 
@@ -16,7 +16,6 @@ import {
   Pause,
   StopCircle,
   AlertCircle,
-  HelpCircle,
   Key,
   Database,
   CheckCircle2,
@@ -25,11 +24,33 @@ import {
   ExternalLink,
   Info,
   Maximize2,
-  X
+  X,
+  Scissors,
+  GripHorizontal,
+  ChevronRight,
+  Save,
+  Loader2
 } from 'lucide-react';
 import { RecordingSession, LayoutStyle, QualityConfig, StorageEstimate, TranscriptionSettings } from './types';
 import { VideoRecorder } from './services/recorder';
 import { getAllSessions, saveSession, deleteSession, clearAllSessions } from './services/db';
+
+// --- Video Editor Types ---
+interface VideoSegment {
+  id: string;
+  start: number; // seconds within the source video
+  end: number;   // seconds within the source video
+  duration: number;
+}
+
+// Added formatDuration and formatSize to top-level so they are accessible to all components in this file.
+const formatDuration = (sec: number) => {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+};
+
+const formatSize = (bytes: number) => (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'record' | 'library' | 'settings'>('record');
@@ -40,6 +61,7 @@ const App: React.FC = () => {
   const [storage, setStorage] = useState<StorageEstimate | null>(null);
   const [policyError, setPolicyError] = useState<string | null>(null);
   const [previewingSession, setPreviewingSession] = useState<RecordingSession | null>(null);
+  const [editingSession, setEditingSession] = useState<RecordingSession | null>(null);
   
   // Permissions state
   const [permissions, setPermissions] = useState<{
@@ -66,13 +88,13 @@ const App: React.FC = () => {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const isDraggingWebcam = useRef(false);
 
-  // Memoized object URL for the preview modal to prevent flickering and memory leaks
+  // Memoized object URL for the preview modal
   const previewUrl = useMemo(() => {
     if (!previewingSession) return null;
     return URL.createObjectURL(previewingSession.videoBlob);
   }, [previewingSession]);
 
-  // Cleanup effect for preview URL
+  // Cleanup preview URL
   useEffect(() => {
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -173,21 +195,14 @@ const App: React.FC = () => {
         updateStorageEstimate();
         alert("Persistent storage granted!");
       } else {
-        alert("Persistent storage denied. This is common in some browsers until the site is bookmarked or heavily used.");
+        alert("Persistent storage denied.");
       }
     }
   };
 
   const formatTimestamp = () => {
     const now = new Date();
-    const day = now.getDate().toString().padStart(2, '0');
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const mon = months[now.getMonth()];
-    const year = now.getFullYear();
-    const hh = now.getHours().toString().padStart(2, '0');
-    const mm = now.getMinutes().toString().padStart(2, '0');
-    const ss = now.getSeconds().toString().padStart(2, '0');
-    return `${day}-${mon}-${year}_${hh}-${mm}-${ss}`;
+    return `${now.getDate().toString().padStart(2, '0')}-${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][now.getMonth()]}-${now.getFullYear()}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}-${now.getSeconds().toString().padStart(2, '0')}`;
   };
 
   const startRecording = async () => {
@@ -212,10 +227,10 @@ const App: React.FC = () => {
     } catch (err: any) {
       console.error("Recording start error:", err);
       const msg = err.message.toLowerCase();
-      if (err.name === 'SecurityError' || msg.includes('permissions policy') || msg.includes('disallowed')) {
-        setPolicyError("Screen Recording (display-capture) is disallowed by the Permissions Policy of this environment.");
+      if (err.name === 'SecurityError' || msg.includes('permissions policy')) {
+        setPolicyError("Screen Recording is disallowed by the Permissions Policy.");
       } else {
-        alert("Error starting recording: " + err.message);
+        alert("Error: " + err.message);
       }
     }
   };
@@ -236,9 +251,7 @@ const App: React.FC = () => {
         quality: quality,
         videoBlob: blob,
         videoType: 'webm',
-        metadata: {
-          webcamPos: { ...recorderRef.current.webcamPos }
-        }
+        metadata: { webcamPos: { ...recorderRef.current.webcamPos } }
       };
       await saveSession(newSession);
       loadSessions();
@@ -251,9 +264,7 @@ const App: React.FC = () => {
     if (isPaused) {
       recorderRef.current.resume();
       setIsPaused(false);
-      timerRef.current = window.setInterval(() => {
-        setElapsed(prev => prev + 1);
-      }, 1000);
+      timerRef.current = window.setInterval(() => setElapsed(prev => prev + 1), 1000);
     } else {
       recorderRef.current.pause();
       setIsPaused(true);
@@ -266,54 +277,16 @@ const App: React.FC = () => {
     const a = document.createElement('a');
     a.href = url;
     a.download = `${session.id}.webm`;
-    document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
   const handleDeleteSession = async (id: string) => {
-    if (confirm("Are you sure you want to delete this session?")) {
+    if (confirm("Delete session?")) {
       await deleteSession(id);
       loadSessions();
       updateStorageEstimate();
     }
-  };
-
-  const handleCanvasInteraction = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isRecording || !recorderRef.current || layout !== 'CIRCLE') return;
-    
-    const container = canvasContainerRef.current;
-    if (!container) return;
-
-    const rect = container.getBoundingClientRect();
-    const x = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-    const y = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
-
-    const relX = ((x - rect.left) / rect.width) * 100;
-    const relY = ((y - rect.top) / rect.height) * 100;
-
-    if (e.type === 'mousedown' || e.type === 'touchstart') {
-      isDraggingWebcam.current = true;
-    } else if (e.type === 'mouseup' || e.type === 'touchend') {
-      isDraggingWebcam.current = false;
-    } else if ((e.type === 'mousemove' || e.type === 'touchmove') && isDraggingWebcam.current) {
-      recorderRef.current.webcamPos = { 
-        x: Math.max(0, Math.min(100, relX)), 
-        y: Math.max(0, Math.min(100, relY)) 
-      };
-    }
-  };
-
-  const formatDuration = (sec: number) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
-  const formatSize = (bytes: number) => {
-    const gb = bytes / (1024 * 1024 * 1024);
-    return gb.toFixed(2) + " GB";
   };
 
   return (
@@ -326,22 +299,13 @@ const App: React.FC = () => {
             DecDecRec Tool
           </h1>
           <nav className="flex gap-4">
-            <button 
-              onClick={() => setActiveTab('record')}
-              className={`p-2 flex items-center gap-1 text-sm transition-colors ${activeTab === 'record' ? 'bg-white text-black' : 'hover:bg-white/10'}`}
-            >
+            <button onClick={() => setActiveTab('record')} className={`p-2 flex items-center gap-1 text-sm transition-colors ${activeTab === 'record' ? 'bg-white text-black' : 'hover:bg-white/10'}`}>
               <Video className="w-4 h-4" /> Record
             </button>
-            <button 
-              onClick={() => setActiveTab('library')}
-              className={`p-2 flex items-center gap-1 text-sm transition-colors ${activeTab === 'library' ? 'bg-white text-black' : 'hover:bg-white/10'}`}
-            >
+            <button onClick={() => setActiveTab('library')} className={`p-2 flex items-center gap-1 text-sm transition-colors ${activeTab === 'library' ? 'bg-white text-black' : 'hover:bg-white/10'}`}>
               <Library className="w-4 h-4" /> Library
             </button>
-            <button 
-              onClick={() => setActiveTab('settings')}
-              className={`p-2 flex items-center gap-1 text-sm transition-colors ${activeTab === 'settings' ? 'bg-white text-black' : 'hover:bg-white/10'}`}
-            >
+            <button onClick={() => setActiveTab('settings')} className={`p-2 flex items-center gap-1 text-sm transition-colors ${activeTab === 'settings' ? 'bg-white text-black' : 'hover:bg-white/10'}`}>
               <Settings className="w-4 h-4" /> Settings
             </button>
           </nav>
@@ -353,7 +317,7 @@ const App: React.FC = () => {
         {activeTab === 'record' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <div className="space-y-6">
-              {/* Permission Dashboard */}
+              {/* Permission & Status */}
               <section className="border border-white/20 p-4 bg-white/5 space-y-3">
                 <div className="flex flex-wrap gap-4 items-center">
                   <span className="text-[10px] font-bold uppercase tracking-widest text-white/40">Status:</span>
@@ -365,63 +329,38 @@ const App: React.FC = () => {
                     {permissions.microphone === 'granted' ? <CheckCircle2 className="w-3 h-3 text-green-500" /> : <XCircle className="w-3 h-3 text-red-500" />}
                     MIC {permissions.microphone.toUpperCase()}
                   </div>
-                  <button 
-                    onClick={loadDevices}
-                    className="ml-auto text-[10px] underline hover:text-white text-white/60"
-                  >
-                    Refresh Devices
-                  </button>
+                  <button onClick={loadDevices} className="ml-auto text-[10px] underline hover:text-white text-white/60">Refresh Devices</button>
                 </div>
-
                 {policyError && (
-                  <div className="p-3 bg-red-900/20 border border-red-500/50 text-red-200 text-xs flex gap-3">
+                   <div className="p-3 bg-red-900/20 border border-red-500/50 text-red-200 text-xs flex gap-3">
                     <AlertCircle className="w-5 h-5 shrink-0" />
-                    <div className="space-y-2">
-                      <p className="font-bold uppercase tracking-tight">Permissions Policy Blocked</p>
-                      <p>{policyError}</p>
-                      <p className="text-white/60">This happens when the app is embedded in an iframe (like AI Studio or a sandbox) that hasn't allowed screen sharing. </p>
-                      <div className="pt-1">
-                        <button 
-                          onClick={() => window.open(window.location.href, '_blank')}
-                          className="px-2 py-1 bg-white text-black font-bold flex items-center gap-1 hover:bg-gray-200 transition-colors"
-                        >
-                          <ExternalLink className="w-3 h-3" /> OPEN IN NEW TAB
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+                    <p>{policyError} Try opening in a new tab.</p>
+                   </div>
                 )}
-                
                 {isRecording && (
                   <div className="p-3 bg-blue-900/20 border border-blue-500/30 text-blue-100 text-[10px] flex gap-2 items-center italic">
                     <Info className="w-4 h-4 shrink-0 text-blue-400" />
-                    <p>Keep this tab visible and active to ensure high-quality, smooth video recording.</p>
+                    <p>Keep this tab active to ensure high-quality, smooth video recording.</p>
                   </div>
                 )}
               </section>
 
+              {/* Layout Config */}
               <section className="border border-white/20 p-6 space-y-4">
                 <h2 className="text-lg font-bold border-b border-white/10 pb-2">Layout Configuration</h2>
                 <div className="flex gap-4">
-                  <button 
-                    onClick={() => setLayout('CIRCLE')}
-                    disabled={isRecording}
-                    className={`flex-1 p-4 border flex flex-col items-center gap-2 transition-all ${layout === 'CIRCLE' ? 'bg-white text-black' : 'border-white/20 hover:bg-white/5'} ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
+                  <button onClick={() => setLayout('CIRCLE')} disabled={isRecording} className={`flex-1 p-4 border flex flex-col items-center gap-2 transition-all ${layout === 'CIRCLE' ? 'bg-white text-black' : 'border-white/20 hover:bg-white/5'} ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}>
                     <Circle className="w-8 h-8" />
                     <span className="text-xs uppercase font-bold">Circle Overlay</span>
                   </button>
-                  <button 
-                    onClick={() => setLayout('SHORTS')}
-                    disabled={isRecording}
-                    className={`flex-1 p-4 border flex flex-col items-center gap-2 transition-all ${layout === 'SHORTS' ? 'bg-white text-black' : 'border-white/20 hover:bg-white/5'} ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
+                  <button onClick={() => setLayout('SHORTS')} disabled={isRecording} className={`flex-1 p-4 border flex flex-col items-center gap-2 transition-all ${layout === 'SHORTS' ? 'bg-white text-black' : 'border-white/20 hover:bg-white/5'} ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}>
                     <RectangleVertical className="w-8 h-8" />
                     <span className="text-xs uppercase font-bold">9:16 Shorts</span>
                   </button>
                 </div>
               </section>
 
+              {/* Device Setup (Restored Section) */}
               <section className="border border-white/20 p-6 space-y-4">
                 <div className="flex justify-between items-center border-b border-white/10 pb-2">
                   <h2 className="text-lg font-bold">Device Setup</h2>
@@ -481,115 +420,40 @@ const App: React.FC = () => {
                 </div>
               </section>
 
+              {/* Recording Buttons */}
               {!isRecording ? (
-                <button 
-                  onClick={startRecording}
-                  disabled={!!policyError}
-                  className={`w-full py-4 font-black text-xl transition-all ${!!policyError ? 'bg-white/10 text-white/20 cursor-not-allowed' : 'bg-white text-black hover:bg-gray-200 shadow-xl'}`}
-                >
+                <button onClick={startRecording} disabled={!!policyError} className={`w-full py-4 font-black text-xl transition-all ${!!policyError ? 'bg-white/10 text-white/20 cursor-not-allowed' : 'bg-white text-black hover:bg-gray-200 shadow-xl'}`}>
                   {!!policyError ? 'BLOCKED BY POLICY' : 'START RECORDING'}
                 </button>
               ) : (
                 <div className="space-y-3">
                   <div className="flex gap-2">
-                    <button 
-                      onClick={togglePause}
-                      className="flex-1 py-4 border border-white bg-black text-white font-bold flex items-center justify-center gap-2 hover:bg-white/10 transition-colors"
-                    >
+                    <button onClick={togglePause} className="flex-1 py-4 border border-white bg-black text-white font-bold flex items-center justify-center gap-2 hover:bg-white/10 transition-colors">
                       {isPaused ? <Play className="fill-white" /> : <Pause className="fill-white" />}
                       {isPaused ? 'RESUME' : 'PAUSE'}
                     </button>
-                    <button 
-                      onClick={stopRecording}
-                      className="flex-1 py-4 bg-red-600 text-white font-bold flex items-center justify-center gap-2 hover:bg-red-700 transition-colors"
-                    >
-                      <StopCircle />
-                      STOP
+                    <button onClick={stopRecording} className="flex-1 py-4 bg-red-600 text-white font-bold flex items-center justify-center gap-2 hover:bg-red-700 transition-colors">
+                      <StopCircle /> STOP
                     </button>
                   </div>
                   <div className="text-center p-2 border border-white/10 bg-white/5">
                     <p className="text-4xl font-mono tabular-nums tracking-tighter">{formatDuration(elapsed)}</p>
-                    <p className="text-[10px] text-white/40 uppercase tracking-widest mt-1">Recording Live Canvas</p>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Preview Panel / Storage Info */}
+            {/* Preview Panel */}
             <div className="space-y-6">
               <section className={`border border-white/20 flex items-center justify-center relative bg-white/5 overflow-hidden ${layout === 'SHORTS' ? 'aspect-[9/16] max-h-[600px] mx-auto' : 'aspect-video'}`}>
-                {!isRecording ? (
-                  <div className="text-center text-white/20 flex flex-col items-center p-6">
-                    <div className="relative mb-2">
-                      {layout === 'SHORTS' ? <RectangleVertical className="w-16 h-16 opacity-10" /> : <Camera className="w-16 h-16 opacity-10" />}
-                      {permissions.camera === 'denied' && (
-                        <XCircle className="w-6 h-6 text-red-500 absolute -top-1 -right-1" />
-                      )}
-                    </div>
-                    <p className="text-sm font-bold uppercase tracking-widest opacity-50">Live Compositing Preview</p>
-                    <p className="text-[10px] mt-2 text-white/30 uppercase">Canvas will appear here when recording starts</p>
-                  </div>
+                {isRecording ? (
+                  <div ref={canvasContainerRef} className="w-full h-full flex items-center justify-center bg-black select-none"></div>
                 ) : (
-                   <div 
-                    ref={canvasContainerRef}
-                    onMouseDown={handleCanvasInteraction}
-                    onMouseMove={handleCanvasInteraction}
-                    onMouseUp={handleCanvasInteraction}
-                    onMouseLeave={handleCanvasInteraction}
-                    onTouchStart={handleCanvasInteraction}
-                    onTouchMove={handleCanvasInteraction}
-                    onTouchEnd={handleCanvasInteraction}
-                    className="w-full h-full flex items-center justify-center bg-black select-none"
-                   >
-                     {/* Canvas injected here by useEffect */}
-                   </div>
-                )}
-                {isRecording && layout === 'CIRCLE' && (
-                  <div className="absolute top-2 left-2 bg-black/60 px-2 py-1 text-[8px] font-bold text-white/80 border border-white/20 pointer-events-none uppercase tracking-widest">
-                    Tip: Click and drag on canvas to move webcam overlay
+                  <div className="text-center text-white/20 flex flex-col items-center p-6">
+                    <Monitor className="w-16 h-16 opacity-10 mb-2" />
+                    <p className="text-sm font-bold uppercase tracking-widest opacity-50">Live Preview</p>
                   </div>
                 )}
-              </section>
-
-              <section className="border border-white/20 p-6 space-y-4">
-                <div className="flex justify-between items-center border-b border-white/10 pb-2">
-                  <h2 className="text-lg font-bold">Storage Status</h2>
-                  {!storage?.persistent && (
-                    <button 
-                      onClick={requestPersistentStorage}
-                      className="text-[10px] bg-white text-black px-2 py-1 font-bold flex items-center gap-1 hover:bg-gray-200 transition-colors"
-                    >
-                      <ShieldCheck className="w-3 h-3" /> REQUEST PERSISTENCE
-                    </button>
-                  )}
-                </div>
-                {storage && (
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-white/50">Used Storage</span>
-                      <span>{formatSize(storage.usage)}</span>
-                    </div>
-                    <div className="w-full bg-white/10 h-1">
-                      <div 
-                        className="bg-white h-full transition-all duration-700 ease-in-out" 
-                        style={{ width: `${Math.min(100, (storage.usage / storage.quota) * 100)}%` }}
-                      ></div>
-                    </div>
-                    <div className="flex justify-between text-[10px] text-white/40">
-                      <span className="flex items-center gap-1">
-                        {storage.persistent ? <CheckCircle2 className="w-3 h-3 text-green-500" /> : <AlertCircle className="w-3 h-3" />}
-                        {storage.persistent ? 'Persistent storage granted' : 'Temporary storage'}
-                      </span>
-                      <span>Quota: {formatSize(storage.quota)}</span>
-                    </div>
-                  </div>
-                )}
-                <div className="p-3 bg-white/5 border border-white/10 flex gap-2">
-                   <Info className="w-4 h-4 shrink-0 opacity-40 text-blue-400" />
-                   <p className="text-[10px] text-white/30 italic leading-normal">
-                      Local sessions are saved in IndexedDB. Persistent storage helps prevent your browser from deleting your recordings automatically if space runs low.
-                   </p>
-                </div>
               </section>
             </div>
           </div>
@@ -597,25 +461,11 @@ const App: React.FC = () => {
 
         {activeTab === 'library' && (
           <div className="space-y-6">
-            <div className="flex justify-between items-center">
-              <h2 className="text-2xl font-bold uppercase tracking-tight text-white/80">Library</h2>
-              <button 
-                onClick={async () => {
-                  if(confirm("Wipe ALL local sessions?")) {
-                    await clearAllSessions();
-                    loadSessions();
-                  }
-                }}
-                className="text-xs p-2 border border-red-600/50 text-red-400 hover:bg-red-600 hover:text-white transition-colors uppercase font-bold"
-              >
-                DELETE ALL SESSIONS
-              </button>
-            </div>
-            
+            <h2 className="text-2xl font-bold uppercase tracking-tight text-white/80">Library</h2>
             {sessions.length === 0 ? (
               <div className="border border-white/10 p-20 text-center text-white/20">
                 <Database className="w-16 h-16 mx-auto mb-4 opacity-5" />
-                <p className="uppercase tracking-widest text-xs font-bold">Your library is currently empty</p>
+                <p className="uppercase tracking-widest text-xs font-bold">Empty Library</p>
               </div>
             ) : (
               <div className="grid gap-4">
@@ -626,7 +476,7 @@ const App: React.FC = () => {
                     onDownload={handleDownload} 
                     onDelete={handleDeleteSession} 
                     onPreview={setPreviewingSession}
-                    formatDuration={formatDuration}
+                    onEdit={setEditingSession}
                   />
                 ))}
               </div>
@@ -640,163 +490,330 @@ const App: React.FC = () => {
              <div className="max-w-6xl w-full bg-black border border-white/20 flex flex-col max-h-[95vh] shadow-2xl relative">
                 <div className="p-4 border-b border-white/20 flex justify-between items-center bg-white/[0.02]">
                    <h3 className="font-mono text-sm font-bold truncate pr-4">{previewingSession.id}</h3>
-                   <button 
-                    onClick={() => setPreviewingSession(null)}
-                    className="p-2 hover:bg-white/10 rounded-full transition-colors shrink-0"
-                   >
-                     <X className="w-5 h-5" />
-                   </button>
+                   <button onClick={() => setPreviewingSession(null)} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X className="w-5 h-5" /></button>
                 </div>
                 <div className="flex-grow flex items-center justify-center p-4 bg-black overflow-hidden relative">
-                   <video 
-                    src={previewUrl} 
-                    controls 
-                    autoPlay
-                    className="max-w-full max-h-full shadow-2xl bg-black rounded-sm border border-white/5"
-                    style={{ 
-                      objectFit: 'contain',
-                      aspectRatio: previewingSession.layoutStyle === 'SHORTS' ? '9/16' : '16/9'
-                    }}
-                   />
-                </div>
-                <div className="p-4 border-t border-white/20 flex flex-col sm:flex-row gap-4 bg-white/[0.02]">
-                   <button 
-                    onClick={() => handleDownload(previewingSession)}
-                    className="flex-1 py-3 bg-white text-black font-black uppercase flex items-center justify-center gap-2 hover:bg-gray-200 transition-colors"
-                   >
-                      <Download className="w-5 h-5" /> Download WebM
-                   </button>
-                   <button 
-                    className="flex-1 py-3 border border-white/20 font-black uppercase flex items-center justify-center gap-2 hover:bg-white/10 transition-colors opacity-50 cursor-not-allowed"
-                   >
-                      <FileText className="w-5 h-5" /> Run AI Transcription
-                   </button>
+                   <video src={previewUrl} controls autoPlay className="max-w-full max-h-full" style={{ objectFit: 'contain' }} />
                 </div>
              </div>
           </div>
         )}
 
-        {activeTab === 'settings' && (
-          <div className="max-w-2xl mx-auto space-y-8">
-             <section className="space-y-4">
-               <h2 className="text-2xl font-bold border-b border-white/20 pb-2 uppercase tracking-tighter">Transcription Settings</h2>
-               <div className="space-y-4">
-                  <div className="flex flex-col gap-2">
-                     <label className="text-xs font-bold uppercase tracking-widest text-white/50">Provider</label>
-                     <div className="flex gap-2">
-                        {(['OPENAI', 'LOCAL_SERVER', 'CLI_GUIDE'] as const).map(mode => (
-                          <button 
-                            key={mode}
-                            onClick={() => setTranscriptionSettings({...transcriptionSettings, mode})}
-                            className={`flex-1 py-2 text-xs border transition-all ${transcriptionSettings.mode === mode ? 'bg-white text-black font-black' : 'border-white/20 hover:bg-white/5'}`}
-                          >
-                            {mode.replace('_', ' ')}
-                          </button>
-                        ))}
-                     </div>
-                  </div>
-
-                  {transcriptionSettings.mode === 'OPENAI' && (
-                    <div className="p-4 border border-white/20 bg-white/5 space-y-3">
-                       <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-tight">
-                          <Key className="w-4 h-4 text-white/40" />
-                          <span>OpenAI API Key</span>
-                       </div>
-                       <input 
-                         type="password"
-                         value={transcriptionSettings.openaiKey || ''}
-                         onChange={(e) => setTranscriptionSettings({...transcriptionSettings, openaiKey: e.target.value})}
-                         placeholder="sk-..."
-                         className="w-full bg-black border border-white/20 p-2 text-sm focus:border-white outline-none transition-colors font-mono"
-                       />
-                       <div className="flex justify-between items-center">
-                          <button className="text-[10px] border border-white/20 px-2 py-1 hover:bg-white/10 transition-colors uppercase font-bold tracking-widest">Test Connection</button>
-                          <span className="text-[10px] text-white/30 italic">Keys are stored ONLY in your local localStorage.</span>
-                       </div>
-                    </div>
-                  )}
-
-                  {transcriptionSettings.mode === 'LOCAL_SERVER' && (
-                    <div className="p-4 border border-white/20 bg-white/5 space-y-3">
-                       <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-tight">
-                          <Database className="w-4 h-4 text-white/40" />
-                          <span>Local Server URL</span>
-                       </div>
-                       <input 
-                         type="text"
-                         value={transcriptionSettings.localServerUrl}
-                         onChange={(e) => setTranscriptionSettings({...transcriptionSettings, localServerUrl: e.target.value})}
-                         className="w-full bg-black border border-white/20 p-2 text-sm focus:border-white outline-none transition-colors font-mono"
-                       />
-                       <p className="text-[10px] text-white/40 leading-relaxed">Default: http://localhost:8765. Requires running the helper server provided in the repository.</p>
-                    </div>
-                  )}
-
-                  {transcriptionSettings.mode === 'CLI_GUIDE' && (
-                    <div className="p-4 border border-white/20 bg-white/5 space-y-3">
-                       <h3 className="text-sm font-bold flex items-center gap-2 uppercase tracking-tight">
-                          <Monitor className="w-4 h-4 text-white/40" /> Manual Transcription Guide
-                       </h3>
-                       <p className="text-xs text-white/60">Use this for maximum privacy and zero cost.</p>
-                       <code className="block bg-black p-3 text-[10px] border border-white/10 leading-relaxed font-mono">
-                          pip install openai-whisper<br/>
-                          whisper "recording_audio.mp3" --model medium --output_format txt,srt
-                       </code>
-                    </div>
-                  )}
-                  
-                  <button 
-                    onClick={() => {
-                      localStorage.setItem('transcriptionSettings', JSON.stringify(transcriptionSettings));
-                      alert("Settings saved!");
-                    }}
-                    className="w-full py-3 bg-white text-black font-bold uppercase tracking-widest text-sm hover:bg-gray-200 transition-colors"
-                  >
-                    Save Configuration
-                  </button>
-               </div>
-             </section>
-
-             <section className="space-y-4">
-                <h2 className="text-2xl font-bold border-b border-white/20 pb-2 uppercase tracking-tighter">System Info</h2>
-                <div className="text-sm space-y-3 text-white/70">
-                   <p>A specialized utility for high-quality screen capture and compositing.</p>
-                   <p>Built with privacy first: zero tracking, zero cloud storage, zero external dependencies except transcription endpoints.</p>
-                   <div className="p-4 bg-white/5 border border-white/10 flex items-start gap-4">
-                      <ShieldCheck className="w-6 h-6 shrink-0 text-white/30" />
-                      <div className="text-[11px] leading-normal space-y-1">
-                         <p className="font-bold text-white/50 uppercase tracking-widest">Local Privacy Protection</p>
-                         <p>Recording happens entirely in your browser sandbox. The composited video is generated on your machine and stored in a local database (IndexedDB).</p>
-                      </div>
-                   </div>
-                </div>
-             </section>
-          </div>
+        {/* Video Editor Modal */}
+        {editingSession && (
+          <VideoEditor 
+            session={editingSession} 
+            onClose={() => setEditingSession(null)} 
+            onSave={async (newBlob) => {
+              const id = `EDITED_${editingSession.id}_${Date.now()}`;
+              const newSession: RecordingSession = {
+                ...editingSession,
+                id,
+                videoBlob: newBlob,
+                createdAtISO: new Date().toISOString(),
+              };
+              await saveSession(newSession);
+              loadSessions();
+              setEditingSession(null);
+            }}
+          />
         )}
       </main>
+    </div>
+  );
+};
 
-      {/* Footer */}
-      <footer className="border-t border-white/20 p-4 bg-black">
-        <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-white/50">
-          <a 
-            href="https://solomonchristai.substack.com/" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="hover:text-white transition-colors flex items-center gap-1"
-          >
-            AI Brief, AI + Automation News, Updates, Tips/Tricks, Tools <ExternalLink className="w-2.5 h-2.5" />
-          </a>
-          <span className="hidden md:inline opacity-20">|</span>
-          <a 
-            href="https://www.solomonchrist.com" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="hover:text-white transition-colors flex items-center gap-1"
-          >
-            Solomon Christ Website <ExternalLink className="w-2.5 h-2.5" />
-          </a>
+// --- Video Editor Component ---
+const VideoEditor: React.FC<{ 
+  session: RecordingSession; 
+  onClose: () => void; 
+  onSave: (blob: Blob) => Promise<void> 
+}> = ({ session, onClose, onSave }) => {
+  const [segments, setSegments] = useState<VideoSegment[]>([
+    { id: '1', start: 0, end: session.durationSeconds, duration: session.durationSeconds }
+  ]);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
+
+  const videoUrl = useMemo(() => URL.createObjectURL(session.videoBlob), [session.videoBlob]);
+
+  useEffect(() => {
+    return () => URL.revokeObjectURL(videoUrl);
+  }, [videoUrl]);
+
+  // Handle 's' key for splitting
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 's' || e.key === 'S') {
+        splitSegment();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentTime, segments]);
+
+  const splitSegment = () => {
+    const totalDurationBefore = segments.reduce((acc, s, idx) => {
+      if (idx < segments.length) {
+        const cumulative = segments.slice(0, idx).reduce((sum, seg) => sum + seg.duration, 0);
+        if (currentTime > cumulative && currentTime < cumulative + s.duration) {
+          const splitAtSourceTime = s.start + (currentTime - cumulative);
+          const newSegments = [...segments];
+          const firstPart = { ...s, end: splitAtSourceTime, duration: splitAtSourceTime - s.start };
+          const secondPart = { id: Math.random().toString(), start: splitAtSourceTime, end: s.end, duration: s.end - splitAtSourceTime };
+          newSegments.splice(idx, 1, firstPart, secondPart);
+          setSegments(newSegments);
+        }
+      }
+      return acc;
+    }, 0);
+  };
+
+  const handleTimelineClick = (e: React.MouseEvent) => {
+    if (!timelineRef.current) return;
+    const rect = timelineRef.current.getBoundingClientRect();
+    const totalDuration = segments.reduce((sum, s) => sum + s.duration, 0);
+    const pos = (e.clientX - rect.left) / rect.width;
+    const newTime = pos * totalDuration;
+    setCurrentTime(newTime);
+    updateVideoTime(newTime);
+  };
+
+  const updateVideoTime = (time: number) => {
+    if (!videoRef.current) return;
+    let cumulative = 0;
+    for (const seg of segments) {
+      if (time >= cumulative && time <= cumulative + seg.duration) {
+        const offset = time - cumulative;
+        videoRef.current.currentTime = seg.start + offset;
+        break;
+      }
+      cumulative += seg.duration;
+    }
+  };
+
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (isPlaying) {
+      videoRef.current.pause();
+    } else {
+      videoRef.current.play();
+    }
+    setIsPlaying(!isPlaying);
+  };
+
+  const handleTimeUpdate = () => {
+    if (!videoRef.current || isExporting) return;
+    const v = videoRef.current;
+    let cumulative = 0;
+    let found = false;
+    for (const seg of segments) {
+      if (v.currentTime >= seg.start && v.currentTime <= seg.end) {
+        setCurrentTime(cumulative + (v.currentTime - seg.start));
+        found = true;
+        break;
+      }
+      cumulative += seg.duration;
+    }
+    // If playhead exceeds segment, jump to next or pause
+    if (isPlaying) {
+      const currentSegment = segments.find((_, i) => {
+        const start = segments.slice(0, i).reduce((sum, s) => sum + s.duration, 0);
+        return currentTime >= start && currentTime < start + segments[i].duration;
+      });
+      if (currentSegment && v.currentTime >= currentSegment.end) {
+        const idx = segments.indexOf(currentSegment);
+        if (idx < segments.length - 1) {
+          v.currentTime = segments[idx + 1].start;
+        } else {
+          v.pause();
+          setIsPlaying(false);
+        }
+      }
+    }
+  };
+
+  const exportVideo = async () => {
+    setIsExporting(true);
+    setIsPlaying(false);
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d')!;
+    const video = videoRef.current!;
+    
+    // Use session quality or video dimensions
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const stream = canvas.captureStream(30);
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => chunks.push(e.data);
+    recorder.start();
+
+    for (const seg of segments) {
+      video.currentTime = seg.start;
+      await new Promise(r => video.onseeked = r);
+      
+      const frames = seg.duration * 30;
+      for (let i = 0; i < frames; i++) {
+        video.currentTime = seg.start + (i / 30);
+        await new Promise(r => setTimeout(r, 10)); // tiny delay to allow frame updates
+        ctx.drawImage(video, 0, 0);
+      }
+    }
+
+    recorder.stop();
+    recorder.onstop = async () => {
+      const blob = new Blob(chunks, { type: 'video/webm' });
+      await onSave(blob);
+      setIsExporting(false);
+    };
+  };
+
+  // Drag and Drop Logic
+  const handleDragStart = (idx: number) => setDraggedIndex(idx);
+  const handleDragOver = (e: React.DragEvent, idx: number) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === idx) return;
+    const newSegments = [...segments];
+    const item = newSegments.splice(draggedIndex, 1)[0];
+    newSegments.splice(idx, 0, item);
+    setSegments(newSegments);
+    setDraggedIndex(idx);
+  };
+
+  const totalEditorDuration = segments.reduce((sum, s) => sum + s.duration, 0);
+
+  return (
+    <div className="fixed inset-0 z-[110] bg-black flex flex-col p-4 animate-in fade-in duration-300">
+      <div className="flex justify-between items-center mb-4">
+        <div className="flex items-center gap-3">
+          <Scissors className="w-5 h-5 text-white/60" />
+          <h2 className="text-xl font-bold uppercase tracking-tighter">Video Editor: {session.id}</h2>
         </div>
-      </footer>
+        <div className="flex gap-2">
+           <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X className="w-6 h-6" /></button>
+        </div>
+      </div>
+
+      <div className="flex-grow flex flex-col md:flex-row gap-6 overflow-hidden">
+        {/* Preview Area */}
+        <div className="flex-grow bg-black/40 border border-white/10 flex flex-col overflow-hidden relative group">
+          <div className="flex-grow flex items-center justify-center relative overflow-hidden">
+            <video 
+              ref={videoRef} 
+              src={videoUrl} 
+              onTimeUpdate={handleTimeUpdate}
+              className="max-w-full max-h-full"
+            />
+            {isExporting && (
+              <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center z-50">
+                <Loader2 className="w-12 h-12 animate-spin mb-4" />
+                <p className="font-bold uppercase tracking-widest text-sm">Rendering Edited Output...</p>
+                <p className="text-[10px] text-white/40 mt-2">Processing each segment onto the compositor canvas</p>
+              </div>
+            )}
+          </div>
+          
+          <div className="p-4 bg-white/[0.02] border-t border-white/10 flex justify-between items-center">
+            <div className="flex items-center gap-4">
+              <button onClick={togglePlay} className="p-2 bg-white text-black hover:bg-white/80 transition-colors">
+                {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
+              </button>
+              <div className="font-mono text-sm">
+                {formatDuration(currentTime)} / {formatDuration(totalEditorDuration)}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-white/40 bg-white/5 px-2 py-1 rounded">PRESS 'S' TO SPLIT AT PLAYHEAD</span>
+              <button 
+                onClick={exportVideo} 
+                disabled={isExporting}
+                className="px-6 py-2 bg-white text-black font-black uppercase tracking-widest hover:bg-gray-200 transition-colors flex items-center gap-2"
+              >
+                <Save className="w-4 h-4" /> Export Edited
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Timeline Sidebar */}
+        <div className="w-full md:w-80 flex flex-col gap-4">
+          <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-white/40">Timeline Segments</h3>
+          <div className="flex-grow overflow-y-auto space-y-2 pr-2">
+            {segments.map((seg, idx) => (
+              <div 
+                key={seg.id}
+                draggable
+                onDragStart={() => handleDragStart(idx)}
+                onDragOver={(e) => handleDragOver(e, idx)}
+                onDragEnd={() => setDraggedIndex(null)}
+                className={`p-3 border transition-colors cursor-grab active:cursor-grabbing flex items-center gap-3 ${draggedIndex === idx ? 'opacity-20' : 'bg-white/5 border-white/10 hover:border-white/30'}`}
+              >
+                <GripHorizontal className="w-4 h-4 text-white/20 shrink-0" />
+                <div className="flex-grow overflow-hidden">
+                  <p className="text-[10px] font-bold uppercase truncate">Segment {idx + 1}</p>
+                  <p className="text-[10px] text-white/40 font-mono">{seg.start.toFixed(1)}s → {seg.end.toFixed(1)}s</p>
+                </div>
+                <div className="text-xs font-mono font-bold bg-white/10 px-1.5 py-0.5">{seg.duration.toFixed(1)}s</div>
+                <button 
+                  onClick={() => {
+                    if (segments.length > 1) {
+                      const ns = [...segments];
+                      ns.splice(idx, 1);
+                      setSegments(ns);
+                    }
+                  }}
+                  className="p-1 hover:text-red-500 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Main Timeline Control */}
+      <div className="mt-6 space-y-2">
+        <div 
+          ref={timelineRef}
+          onClick={handleTimelineClick}
+          className="w-full h-12 bg-white/10 relative cursor-pointer group"
+        >
+          {/* Segment Blocks */}
+          <div className="absolute inset-0 flex">
+            {segments.map((seg, idx) => (
+              <div 
+                key={seg.id} 
+                style={{ width: `${(seg.duration / totalEditorDuration) * 100}%` }}
+                className={`h-full border-r border-black/40 relative group/seg ${idx % 2 === 0 ? 'bg-white/5' : 'bg-white/[0.08]'}`}
+              >
+                <div className="absolute top-1 left-1 text-[8px] font-bold text-white/20 uppercase tracking-tighter">Seg {idx + 1}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Playhead */}
+          <div 
+            style={{ left: `${(currentTime / totalEditorDuration) * 100}%` }}
+            className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10 shadow-[0_0_10px_rgba(239,68,68,0.8)]"
+          >
+            <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-full border-l-[6px] border-r-[6px] border-t-[8px] border-l-transparent border-r-transparent border-t-red-500"></div>
+          </div>
+        </div>
+        <div className="flex justify-between text-[10px] font-mono text-white/20 uppercase">
+          <span>00:00.0</span>
+          <span>Timeline Overview ({totalEditorDuration.toFixed(1)}s total)</span>
+          <span>{formatDuration(totalEditorDuration)}</span>
+        </div>
+      </div>
     </div>
   );
 };
@@ -807,8 +824,8 @@ const LibraryCard: React.FC<{
   onDownload: (s: RecordingSession) => void;
   onDelete: (id: string) => void;
   onPreview: (s: RecordingSession) => void;
-  formatDuration: (s: number) => string;
-}> = ({ session, onDownload, onDelete, onPreview, formatDuration }) => {
+  onEdit: (s: RecordingSession) => void;
+}> = ({ session, onDownload, onDelete, onPreview, onEdit }) => {
   const videoUrl = useMemo(() => URL.createObjectURL(session.videoBlob), [session.videoBlob]);
 
   useEffect(() => {
@@ -867,12 +884,15 @@ const LibraryCard: React.FC<{
             <span className="bg-white/5 px-2 py-0.5 rounded-sm">{session.quality.fps} FPS</span>
         </div>
         <div className="flex gap-2 pt-4">
-            <button className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors uppercase font-bold tracking-tighter opacity-40 cursor-not-allowed">
-              <FileText className="w-3 h-3" /> Transcribe
+            <button 
+              onClick={() => onEdit(session)}
+              className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white hover:text-black hover:border-white transition-colors uppercase font-bold tracking-tighter flex items-center gap-1.5"
+            >
+              <Scissors className="w-3 h-3" /> Edit Video
             </button>
             <button 
-            onClick={() => onPreview(session)}
-            className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors uppercase font-bold tracking-tighter"
+              onClick={() => onPreview(session)}
+              className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors uppercase font-bold tracking-tighter"
             >
               <Maximize2 className="w-3 h-3" /> Full View
             </button>
