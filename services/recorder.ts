@@ -11,8 +11,8 @@ export class VideoRecorder {
   private audioStream: MediaStream | null = null;
   private animationFrameId: number | null = null;
 
-  public webcamPos = { x: 50, y: 50 }; // In percentage
-  public webcamSize = 150; // In pixels
+  public webcamPos = { x: 85, y: 85 }; // In percentage, default bottom right
+  public webcamSize = 200; // In pixels
 
   private screenVideo: HTMLVideoElement = document.createElement('video');
   private webcamVideo: HTMLVideoElement = document.createElement('video');
@@ -22,6 +22,14 @@ export class VideoRecorder {
     const context = this.canvas.getContext('2d');
     if (!context) throw new Error('Could not get canvas context');
     this.ctx = context;
+    
+    // Set some defaults so the canvas isn't 0x0 initially
+    this.canvas.width = 1280;
+    this.canvas.height = 720;
+  }
+
+  public getCanvas(): HTMLCanvasElement {
+    return this.canvas;
   }
 
   async start(
@@ -119,6 +127,7 @@ export class VideoRecorder {
           this.ctx.beginPath();
           this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
           this.ctx.clip();
+          // Adjust image to center inside the circle crop
           this.ctx.drawImage(
             this.webcamVideo,
             cx - radius,
@@ -129,7 +138,7 @@ export class VideoRecorder {
           this.ctx.restore();
           
           this.ctx.strokeStyle = 'white';
-          this.ctx.lineWidth = 2;
+          this.ctx.lineWidth = 4;
           this.ctx.stroke();
         }
       } else if (layout === 'SHORTS') {
@@ -147,7 +156,7 @@ export class VideoRecorder {
 
         // Divider
         this.ctx.strokeStyle = 'white';
-        this.ctx.lineWidth = 2;
+        this.ctx.lineWidth = 4;
         this.ctx.beginPath();
         this.ctx.moveTo(0, screenH);
         this.ctx.lineTo(w, screenH);
@@ -169,7 +178,9 @@ export class VideoRecorder {
     this.webcamStream?.getTracks().forEach(t => t.stop());
     this.audioStream?.getTracks().forEach(t => t.stop());
 
-    return new Blob(this.chunks, { type: 'video/webm' });
+    const blob = this.chunks.length > 0 ? new Blob(this.chunks, { type: 'video/webm' }) : null;
+    this.chunks = [];
+    return blob;
   }
 
   pause() { this.mediaRecorder?.pause(); }

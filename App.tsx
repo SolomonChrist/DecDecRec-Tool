@@ -23,7 +23,9 @@ import {
   XCircle,
   ShieldCheck,
   ExternalLink,
-  Info
+  Info,
+  Maximize2,
+  X
 } from 'lucide-react';
 import { RecordingSession, LayoutStyle, QualityConfig, StorageEstimate, TranscriptionSettings } from './types';
 import { VideoRecorder } from './services/recorder';
@@ -37,6 +39,7 @@ const App: React.FC = () => {
   const [sessions, setSessions] = useState<RecordingSession[]>([]);
   const [storage, setStorage] = useState<StorageEstimate | null>(null);
   const [policyError, setPolicyError] = useState<string | null>(null);
+  const [previewingSession, setPreviewingSession] = useState<RecordingSession | null>(null);
   
   // Permissions state
   const [permissions, setPermissions] = useState<{
@@ -60,6 +63,8 @@ const App: React.FC = () => {
 
   const recorderRef = useRef<VideoRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const isDraggingWebcam = useRef(false);
 
   useEffect(() => {
     loadSessions();
@@ -70,10 +75,19 @@ const App: React.FC = () => {
     if (storedSettings) setTranscriptionSettings(JSON.parse(storedSettings));
   }, []);
 
+  // Sync canvas to DOM
+  useEffect(() => {
+    if (isRecording && recorderRef.current && canvasContainerRef.current) {
+      const canvas = recorderRef.current.getCanvas();
+      canvas.className = "w-full h-full object-contain cursor-move";
+      canvasContainerRef.current.innerHTML = '';
+      canvasContainerRef.current.appendChild(canvas);
+    }
+  }, [isRecording]);
+
   const checkPermissions = async () => {
     try {
       if (navigator.permissions && navigator.permissions.query) {
-        // Some browsers don't support 'camera' or 'microphone' strings in query
         try {
           const cam = await navigator.permissions.query({ name: 'camera' as any });
           const mic = await navigator.permissions.query({ name: 'microphone' as any });
@@ -86,7 +100,6 @@ const App: React.FC = () => {
           cam.onchange = () => setPermissions(prev => ({ ...prev, camera: cam.state }));
           mic.onchange = () => setPermissions(prev => ({ ...prev, microphone: mic.state }));
         } catch (e) {
-          // Fallback if query fails
           const devs = await navigator.mediaDevices.enumerateDevices();
           const hasLabels = devs.some(d => !!d.label);
           setPermissions({
@@ -107,7 +120,6 @@ const App: React.FC = () => {
 
   const loadDevices = async () => {
     try {
-      // Trigger permission prompt if needed
       await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       const devs = await navigator.mediaDevices.enumerateDevices();
       setDevices(devs);
@@ -212,7 +224,7 @@ const App: React.FC = () => {
         videoBlob: blob,
         videoType: 'webm',
         metadata: {
-          webcamPos: recorderRef.current.webcamPos
+          webcamPos: { ...recorderRef.current.webcamPos }
         }
       };
       await saveSession(newSession);
@@ -236,11 +248,47 @@ const App: React.FC = () => {
     }
   };
 
+  const handleDownload = (session: RecordingSession) => {
+    const url = URL.createObjectURL(session.videoBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${session.id}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const handleDeleteSession = async (id: string) => {
     if (confirm("Are you sure you want to delete this session?")) {
       await deleteSession(id);
       loadSessions();
       updateStorageEstimate();
+    }
+  };
+
+  const handleCanvasInteraction = (e: React.MouseEvent | React.TouchEvent) => {
+    if (!isRecording || !recorderRef.current || layout !== 'CIRCLE') return;
+    
+    const container = canvasContainerRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const x = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const y = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+
+    const relX = ((x - rect.left) / rect.width) * 100;
+    const relY = ((y - rect.top) / rect.height) * 100;
+
+    if (e.type === 'mousedown' || e.type === 'touchstart') {
+      isDraggingWebcam.current = true;
+    } else if (e.type === 'mouseup' || e.type === 'touchend') {
+      isDraggingWebcam.current = false;
+    } else if ((e.type === 'mousemove' || e.type === 'touchmove') && isDraggingWebcam.current) {
+      recorderRef.current.webcamPos = { 
+        x: Math.max(0, Math.min(100, relX)), 
+        y: Math.max(0, Math.min(100, relY)) 
+      };
     }
   };
 
@@ -337,14 +385,16 @@ const App: React.FC = () => {
                 <div className="flex gap-4">
                   <button 
                     onClick={() => setLayout('CIRCLE')}
-                    className={`flex-1 p-4 border flex flex-col items-center gap-2 transition-all ${layout === 'CIRCLE' ? 'bg-white text-black' : 'border-white/20 hover:bg-white/5'}`}
+                    disabled={isRecording}
+                    className={`flex-1 p-4 border flex flex-col items-center gap-2 transition-all ${layout === 'CIRCLE' ? 'bg-white text-black' : 'border-white/20 hover:bg-white/5'} ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
                     <Circle className="w-8 h-8" />
                     <span className="text-xs uppercase font-bold">Circle Overlay</span>
                   </button>
                   <button 
                     onClick={() => setLayout('SHORTS')}
-                    className={`flex-1 p-4 border flex flex-col items-center gap-2 transition-all ${layout === 'SHORTS' ? 'bg-white text-black' : 'border-white/20 hover:bg-white/5'}`}
+                    disabled={isRecording}
+                    className={`flex-1 p-4 border flex flex-col items-center gap-2 transition-all ${layout === 'SHORTS' ? 'bg-white text-black' : 'border-white/20 hover:bg-white/5'} ${isRecording ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
                     <RectangleVertical className="w-8 h-8" />
                     <span className="text-xs uppercase font-bold">9:16 Shorts</span>
@@ -358,10 +408,11 @@ const App: React.FC = () => {
                 </div>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">Webcam</span>
+                    <span className="text-sm font-medium text-white/80">Webcam</span>
                     <button 
                       onClick={() => setUseWebcam(!useWebcam)}
-                      className={`px-3 py-1 text-xs font-bold border transition-colors ${useWebcam ? 'bg-white text-black' : 'border-white/20'}`}
+                      disabled={isRecording}
+                      className={`px-3 py-1 text-xs font-bold border transition-colors ${useWebcam ? 'bg-white text-black' : 'border-white/20'} ${isRecording ? 'opacity-50' : ''}`}
                     >
                       {useWebcam ? 'ON' : 'OFF'}
                     </button>
@@ -370,7 +421,8 @@ const App: React.FC = () => {
                     <select 
                       value={webcamId}
                       onChange={(e) => setWebcamId(e.target.value)}
-                      className="w-full bg-black border border-white/20 p-2 text-sm text-white"
+                      disabled={isRecording}
+                      className="w-full bg-black border border-white/20 p-2 text-sm text-white focus:border-white outline-none"
                     >
                       {devices.filter(d => d.kind === 'videoinput').length === 0 && (
                         <option value="">No cameras detected</option>
@@ -381,12 +433,13 @@ const App: React.FC = () => {
                     </select>
                   )}
                   <div className="flex items-center justify-between pt-2">
-                    <span className="text-sm font-medium">Microphone</span>
+                    <span className="text-sm font-medium text-white/80">Microphone</span>
                   </div>
                   <select 
                     value={micId}
                     onChange={(e) => setMicId(e.target.value)}
-                    className="w-full bg-black border border-white/20 p-2 text-sm text-white"
+                    disabled={isRecording}
+                    className="w-full bg-black border border-white/20 p-2 text-sm text-white focus:border-white outline-none"
                   >
                     {devices.filter(d => d.kind === 'audioinput').length === 0 && (
                       <option value="">No microphones detected</option>
@@ -399,6 +452,7 @@ const App: React.FC = () => {
                     <input 
                       type="checkbox" 
                       checked={captureSystemAudio} 
+                      disabled={isRecording}
                       onChange={(e) => setCaptureSystemAudio(e.target.checked)}
                       className="accent-white"
                     />
@@ -407,33 +461,11 @@ const App: React.FC = () => {
                 </div>
               </section>
 
-              <section className="border border-white/20 p-6 space-y-4">
-                <h2 className="text-lg font-bold border-b border-white/10 pb-2">Quality & Output</h2>
-                <div className="grid grid-cols-2 gap-4">
-                  <select 
-                    value={quality.resolution}
-                    onChange={(e) => setQuality({...quality, resolution: e.target.value as any})}
-                    className="bg-black border border-white/20 p-2 text-sm"
-                  >
-                    <option value="1080p">1080p</option>
-                    <option value="720p">720p</option>
-                  </select>
-                  <select 
-                    value={quality.fps}
-                    onChange={(e) => setQuality({...quality, fps: parseInt(e.target.value) as any})}
-                    className="bg-black border border-white/20 p-2 text-sm"
-                  >
-                    <option value="30">30 FPS</option>
-                    <option value="60">60 FPS</option>
-                  </select>
-                </div>
-              </section>
-
               {!isRecording ? (
                 <button 
                   onClick={startRecording}
                   disabled={!!policyError}
-                  className={`w-full py-4 font-black text-xl transition-all ${!!policyError ? 'bg-white/10 text-white/20 cursor-not-allowed' : 'bg-white text-black hover:bg-gray-200'}`}
+                  className={`w-full py-4 font-black text-xl transition-all ${!!policyError ? 'bg-white/10 text-white/20 cursor-not-allowed' : 'bg-white text-black hover:bg-gray-200 shadow-xl'}`}
                 >
                   {!!policyError ? 'BLOCKED BY POLICY' : 'START RECORDING'}
                 </button>
@@ -456,8 +488,8 @@ const App: React.FC = () => {
                     </button>
                   </div>
                   <div className="text-center p-2 border border-white/10 bg-white/5">
-                    <p className="text-4xl font-mono tabular-nums">{formatDuration(elapsed)}</p>
-                    <p className="text-[10px] text-white/40 uppercase tracking-widest mt-1">Recording in Progress</p>
+                    <p className="text-4xl font-mono tabular-nums tracking-tighter">{formatDuration(elapsed)}</p>
+                    <p className="text-[10px] text-white/40 uppercase tracking-widest mt-1">Recording Live Canvas</p>
                   </div>
                 </div>
               )}
@@ -465,27 +497,37 @@ const App: React.FC = () => {
 
             {/* Preview Panel / Storage Info */}
             <div className="space-y-6">
-              <section className="border border-white/20 p-6 aspect-video flex items-center justify-center relative bg-white/5 overflow-hidden">
+              <section className="border border-white/20 aspect-video flex items-center justify-center relative bg-white/5 overflow-hidden">
                 {!isRecording ? (
-                  <div className="text-center text-white/20 flex flex-col items-center">
+                  <div className="text-center text-white/20 flex flex-col items-center p-6">
                     <div className="relative mb-2">
                       <Camera className="w-16 h-16 opacity-10" />
                       {permissions.camera === 'denied' && (
                         <XCircle className="w-6 h-6 text-red-500 absolute -top-1 -right-1" />
                       )}
                     </div>
-                    <p className="text-sm font-bold uppercase tracking-widest">Ready to Composite</p>
+                    <p className="text-sm font-bold uppercase tracking-widest opacity-50">Live Compositing Preview</p>
+                    <p className="text-[10px] mt-2 text-white/30 uppercase">Canvas will appear here when recording starts</p>
                   </div>
                 ) : (
-                   <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="flex flex-col items-center gap-2 animate-pulse">
-                        <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 bg-red-600 rounded-full"></div>
-                          <span className="font-black text-xl tracking-tighter uppercase italic">Recording</span>
-                        </div>
-                        <span className="text-[10px] font-bold opacity-50 uppercase tracking-[0.2em]">{layout} MODE</span>
-                      </div>
+                   <div 
+                    ref={canvasContainerRef}
+                    onMouseDown={handleCanvasInteraction}
+                    onMouseMove={handleCanvasInteraction}
+                    onMouseUp={handleCanvasInteraction}
+                    onMouseLeave={handleCanvasInteraction}
+                    onTouchStart={handleCanvasInteraction}
+                    onTouchMove={handleCanvasInteraction}
+                    onTouchEnd={handleCanvasInteraction}
+                    className="w-full h-full flex items-center justify-center bg-black select-none"
+                   >
+                     {/* Canvas injected here by useEffect */}
                    </div>
+                )}
+                {isRecording && layout === 'CIRCLE' && (
+                  <div className="absolute top-2 left-2 bg-black/60 px-2 py-1 text-[8px] font-bold text-white/80 border border-white/20 pointer-events-none uppercase tracking-widest">
+                    Tip: Click and drag on canvas to move webcam overlay
+                  </div>
                 )}
               </section>
 
@@ -523,7 +565,7 @@ const App: React.FC = () => {
                   </div>
                 )}
                 <div className="p-3 bg-white/5 border border-white/10 flex gap-2">
-                   <Info className="w-4 h-4 shrink-0 opacity-40" />
+                   <Info className="w-4 h-4 shrink-0 opacity-40 text-blue-400" />
                    <p className="text-[10px] text-white/30 italic leading-normal">
                       Local sessions are saved in IndexedDB. Persistent storage helps prevent your browser from deleting your recordings automatically if space runs low.
                    </p>
@@ -544,7 +586,7 @@ const App: React.FC = () => {
                     loadSessions();
                   }
                 }}
-                className="text-xs p-2 border border-red-600/50 text-red-400 hover:bg-red-600 hover:text-white transition-colors"
+                className="text-xs p-2 border border-red-600/50 text-red-400 hover:bg-red-600 hover:text-white transition-colors uppercase font-bold"
               >
                 DELETE ALL SESSIONS
               </button>
@@ -558,53 +600,65 @@ const App: React.FC = () => {
             ) : (
               <div className="grid gap-4">
                 {sessions.map(session => (
-                  <div key={session.id} className="border border-white/20 p-6 flex flex-col md:flex-row gap-6 items-start hover:border-white/40 transition-colors">
-                    <div className="aspect-video bg-white/10 w-full md:w-64 flex items-center justify-center relative group cursor-pointer overflow-hidden border border-white/5">
+                  <div key={session.id} className="border border-white/20 p-6 flex flex-col md:flex-row gap-6 items-start hover:border-white/40 transition-colors bg-white/[0.02]">
+                    <div 
+                      className="aspect-video bg-black w-full md:w-64 flex items-center justify-center relative group cursor-pointer overflow-hidden border border-white/10"
+                      onClick={() => setPreviewingSession(session)}
+                    >
                       <video 
-                        className="w-full h-full object-cover" 
+                        className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity" 
                         src={URL.createObjectURL(session.videoBlob)} 
-                        onMouseOver={(e) => e.currentTarget.play()}
-                        onMouseOut={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
                         muted
                         loop
+                        onMouseOver={(e) => e.currentTarget.play()}
+                        onMouseOut={(e) => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }}
                       />
-                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                         <Play className="w-10 h-10" />
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                         <Play className="w-10 h-10 text-white" />
                       </div>
-                      <span className="absolute bottom-1 right-1 bg-black text-white text-[10px] px-1 font-mono">
+                      <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 font-mono border border-white/10">
                         {formatDuration(session.durationSeconds)}
                       </span>
                     </div>
-                    <div className="flex-grow space-y-2">
+                    <div className="flex-grow space-y-2 w-full">
                       <div className="flex justify-between items-start">
-                        <h3 className="font-mono text-lg font-bold">{session.id}</h3>
+                        <div className="space-y-1">
+                          <h3 className="font-mono text-lg font-bold tracking-tight">{session.id}</h3>
+                          <p className="text-[10px] text-white/40 font-mono uppercase">
+                            Captured on {new Date(session.createdAtISO).toLocaleString()}
+                          </p>
+                        </div>
                         <div className="flex gap-2">
                           <button 
-                            className="p-2 border border-white/20 hover:bg-white hover:text-black transition-colors"
-                            title="Download ZIP"
+                            onClick={() => handleDownload(session)}
+                            className="p-2 border border-white/20 hover:bg-white hover:text-black transition-all hover:scale-105"
+                            title="Download WebM"
                           >
                             <Download className="w-4 h-4" />
                           </button>
                           <button 
                             onClick={() => handleDeleteSession(session.id)}
-                            className="p-2 border border-red-600/50 text-red-500 hover:bg-red-600 hover:text-white transition-colors"
+                            className="p-2 border border-red-600/50 text-red-500 hover:bg-red-600 hover:text-white transition-all hover:scale-105"
                             title="Delete"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
                       </div>
-                      <div className="flex gap-4 text-xs text-white/50 uppercase tracking-widest font-bold">
-                         <span className="flex items-center gap-1"><Monitor className="w-3 h-3" /> {session.layoutStyle}</span>
-                         <span>{session.quality.resolution}</span>
-                         <span>{session.quality.fps} FPS</span>
+                      <div className="flex flex-wrap gap-4 text-xs text-white/50 uppercase tracking-widest font-bold pt-2">
+                         <span className="flex items-center gap-1 bg-white/5 px-2 py-0.5 rounded-sm"><Monitor className="w-3 h-3" /> {session.layoutStyle}</span>
+                         <span className="bg-white/5 px-2 py-0.5 rounded-sm">{session.quality.resolution}</span>
+                         <span className="bg-white/5 px-2 py-0.5 rounded-sm">{session.quality.fps} FPS</span>
                       </div>
-                      <div className="flex gap-2 pt-2">
-                         <button className="px-3 py-1 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors">
+                      <div className="flex gap-2 pt-4">
+                         <button className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors uppercase font-bold tracking-tighter">
                             <FileText className="w-3 h-3" /> Transcribe
                          </button>
-                         <button className="px-3 py-1 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors">
-                            <Monitor className="w-3 h-3" /> Preview
+                         <button 
+                          onClick={() => setPreviewingSession(session)}
+                          className="px-3 py-1.5 border border-white/20 text-xs hover:bg-white/10 flex items-center gap-1 transition-colors uppercase font-bold tracking-tighter"
+                         >
+                            <Maximize2 className="w-3 h-3" /> View Large
                          </button>
                       </div>
                     </div>
@@ -615,10 +669,48 @@ const App: React.FC = () => {
           </div>
         )}
 
+        {/* Preview Modal */}
+        {previewingSession && (
+          <div className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4 backdrop-blur-sm">
+             <div className="max-w-6xl w-full bg-black border border-white/20 flex flex-col max-h-[90vh]">
+                <div className="p-4 border-b border-white/20 flex justify-between items-center bg-white/[0.02]">
+                   <h3 className="font-mono text-sm font-bold">{previewingSession.id}</h3>
+                   <button 
+                    onClick={() => setPreviewingSession(null)}
+                    className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                   >
+                     <X className="w-5 h-5" />
+                   </button>
+                </div>
+                <div className="flex-grow flex items-center justify-center p-2 bg-black overflow-hidden">
+                   <video 
+                    src={URL.createObjectURL(previewingSession.videoBlob)} 
+                    controls 
+                    autoPlay
+                    className="max-w-full max-h-full object-contain"
+                   />
+                </div>
+                <div className="p-4 border-t border-white/20 flex gap-4 bg-white/[0.02]">
+                   <button 
+                    onClick={() => handleDownload(previewingSession)}
+                    className="flex-1 py-3 bg-white text-black font-black uppercase flex items-center justify-center gap-2 hover:bg-gray-200 transition-colors"
+                   >
+                      <Download className="w-5 h-5" /> Download Recording
+                   </button>
+                   <button 
+                    className="flex-1 py-3 border border-white/20 font-black uppercase flex items-center justify-center gap-2 hover:bg-white/10 transition-colors"
+                   >
+                      <FileText className="w-5 h-5" /> Run AI Transcription
+                   </button>
+                </div>
+             </div>
+          </div>
+        )}
+
         {activeTab === 'settings' && (
           <div className="max-w-2xl mx-auto space-y-8">
              <section className="space-y-4">
-               <h2 className="text-2xl font-bold border-b border-white/20 pb-2">Transcription Settings</h2>
+               <h2 className="text-2xl font-bold border-b border-white/20 pb-2 uppercase tracking-tighter">Transcription Settings</h2>
                <div className="space-y-4">
                   <div className="flex flex-col gap-2">
                      <label className="text-xs font-bold uppercase tracking-widest text-white/50">Provider</label>
@@ -646,10 +738,10 @@ const App: React.FC = () => {
                          value={transcriptionSettings.openaiKey || ''}
                          onChange={(e) => setTranscriptionSettings({...transcriptionSettings, openaiKey: e.target.value})}
                          placeholder="sk-..."
-                         className="w-full bg-black border border-white/20 p-2 text-sm focus:border-white outline-none transition-colors"
+                         className="w-full bg-black border border-white/20 p-2 text-sm focus:border-white outline-none transition-colors font-mono"
                        />
                        <div className="flex justify-between items-center">
-                          <button className="text-[10px] border border-white/20 px-2 py-1 hover:bg-white/10 transition-colors uppercase font-bold">Test Connection</button>
+                          <button className="text-[10px] border border-white/20 px-2 py-1 hover:bg-white/10 transition-colors uppercase font-bold tracking-widest">Test Connection</button>
                           <span className="text-[10px] text-white/30 italic">Keys are stored ONLY in your local localStorage.</span>
                        </div>
                     </div>
@@ -665,9 +757,9 @@ const App: React.FC = () => {
                          type="text"
                          value={transcriptionSettings.localServerUrl}
                          onChange={(e) => setTranscriptionSettings({...transcriptionSettings, localServerUrl: e.target.value})}
-                         className="w-full bg-black border border-white/20 p-2 text-sm focus:border-white outline-none transition-colors"
+                         className="w-full bg-black border border-white/20 p-2 text-sm focus:border-white outline-none transition-colors font-mono"
                        />
-                       <p className="text-[10px] text-white/40">Default: http://localhost:8765. Requires running the helper server provided in the repo.</p>
+                       <p className="text-[10px] text-white/40 leading-relaxed">Default: http://localhost:8765. Requires running the helper server provided in the repository.</p>
                     </div>
                   )}
 
@@ -697,7 +789,7 @@ const App: React.FC = () => {
              </section>
 
              <section className="space-y-4">
-                <h2 className="text-2xl font-bold border-b border-white/20 pb-2">About</h2>
+                <h2 className="text-2xl font-bold border-b border-white/20 pb-2 uppercase tracking-tighter">System Info</h2>
                 <div className="text-sm space-y-3 text-white/70">
                    <p>A specialized utility for high-quality screen capture and compositing.</p>
                    <p>Built with privacy first: zero tracking, zero cloud storage, zero external dependencies except transcription endpoints.</p>
