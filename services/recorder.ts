@@ -9,33 +9,33 @@ export class VideoRecorder {
   private screenStream: MediaStream | null = null;
   private webcamStream: MediaStream | null = null;
   private audioStream: MediaStream | null = null;
-  private animationFrameId: number | null = null;
-  private lastFrameTime: number = 0;
+  private renderInterval: number | null = null;
   private targetFps: number = 30;
   private currentLayout: LayoutStyle = 'CIRCLE';
 
-  public webcamPos = { x: 85, y: 85 }; // In percentage, default bottom right
-  public webcamSize = 240; // Diameter for circular overlay
+  public webcamPos = { x: 85, y: 85 };
+  public webcamSize = 240;
 
   private screenVideo: HTMLVideoElement = document.createElement('video');
   private webcamVideo: HTMLVideoElement = document.createElement('video');
 
   constructor() {
     this.canvas = document.createElement('canvas');
-    const context = this.canvas.getContext('2d');
+    const context = this.canvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('Could not get canvas context');
     this.ctx = context;
     
-    // Default 16:9 init
     this.canvas.width = 1280;
     this.canvas.height = 720;
 
-    this.screenVideo.setAttribute('playsinline', '');
-    this.webcamVideo.setAttribute('playsinline', '');
-    
-    // Ensure videos play when ready to prevent freezing
-    this.screenVideo.onloadedmetadata = () => this.screenVideo.play().catch(console.error);
-    this.webcamVideo.onloadedmetadata = () => this.webcamVideo.play().catch(console.error);
+    // Standard video element config for streaming
+    [this.screenVideo, this.webcamVideo].forEach(v => {
+      v.setAttribute('playsinline', '');
+      v.setAttribute('autoplay', '');
+      v.muted = true;
+      // Critical: Prevent browser from pausing video when tab is hidden
+      v.onpause = () => v.play().catch(() => {});
+    });
   }
 
   public getCanvas(): HTMLCanvasElement {
@@ -76,11 +76,6 @@ export class VideoRecorder {
         audio: captureSystemAudio
       });
       
-      // Handle "Stop Sharing" button in browser UI
-      this.screenStream.getTracks()[0].onended = () => {
-        // We could trigger a stop here, but usually users just want to stop sharing
-      };
-
       this.screenVideo.srcObject = this.screenStream;
       await this.screenVideo.play();
 
@@ -113,8 +108,7 @@ export class VideoRecorder {
       const stream = this.canvas.captureStream(quality.fps);
       this.audioStream.getAudioTracks().forEach(track => stream.addTrack(track));
 
-      const options = { mimeType: 'video/webm;codecs=vp9,opus' };
-      this.mediaRecorder = new MediaRecorder(stream, options);
+      this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
       this.chunks = [];
 
       this.mediaRecorder.ondataavailable = (e) => {
@@ -123,30 +117,16 @@ export class VideoRecorder {
 
       this.mediaRecorder.start(100);
       
-      this.lastFrameTime = performance.now();
-      this.renderLoop();
+      // Use setInterval instead of requestAnimationFrame for better background performance
+      // browsers throttle background setInterval to 1s, but that's better than 0.
+      this.renderInterval = window.setInterval(() => {
+        this.drawFrame(this.currentLayout);
+      }, 1000 / this.targetFps);
+
     } catch (err) {
       this.stop();
       throw err;
     }
-  }
-
-  private renderLoop = (time?: number) => {
-    const now = time || performance.now();
-    const elapsed = now - this.lastFrameTime;
-    const interval = 1000 / this.targetFps;
-
-    // Use a try-catch to ensure one failed frame doesn't kill the whole loop
-    try {
-      if (elapsed >= interval) {
-        this.drawFrame(this.currentLayout);
-        this.lastFrameTime = now - (elapsed % interval);
-      }
-    } catch (e) {
-      console.error("Frame render error:", e);
-    }
-    
-    this.animationFrameId = requestAnimationFrame(this.renderLoop);
   }
 
   private drawCover(img: HTMLVideoElement, x: number, y: number, w: number, h: number) {
@@ -176,10 +156,12 @@ export class VideoRecorder {
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
     if (layout === 'CIRCLE') {
+      // Screen background
       if (this.screenVideo.readyState >= 2) {
         this.ctx.drawImage(this.screenVideo, 0, 0, this.canvas.width, this.canvas.height);
       }
       
+      // Circle overlay
       if (this.webcamStream && this.webcamVideo.readyState >= 2) {
         const cx = (this.webcamPos.x / 100) * this.canvas.width;
         const cy = (this.webcamPos.y / 100) * this.canvas.height;
@@ -209,18 +191,19 @@ export class VideoRecorder {
       }
       this.ctx.strokeStyle = 'white';
       this.ctx.lineWidth = 6;
-      this.ctx.beginPath();
-      this.ctx.moveTo(0, halfH);
-      this.ctx.lineTo(w, halfH);
-      this.ctx.stroke();
+      this.ctx.strokeRect(0, halfH, w, 0);
     }
   }
 
   stop(): Blob | null {
-    if (this.mediaRecorder) {
+    if (this.renderInterval) {
+      clearInterval(this.renderInterval);
+      this.renderInterval = null;
+    }
+    
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       this.mediaRecorder.stop();
     }
-    if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
     
     this.screenStream?.getTracks().forEach(t => t.stop());
     this.webcamStream?.getTracks().forEach(t => t.stop());
@@ -233,12 +216,11 @@ export class VideoRecorder {
 
   pause() { 
     this.mediaRecorder?.pause(); 
-    if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
+    if (this.renderInterval) clearInterval(this.renderInterval);
   }
   
   resume() { 
     this.mediaRecorder?.resume(); 
-    this.lastFrameTime = performance.now();
-    this.renderLoop();
+    this.renderInterval = window.setInterval(() => this.drawFrame(this.currentLayout), 1000 / this.targetFps);
   }
 }
