@@ -366,40 +366,39 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
   const [exportProgress, setExportProgress] = useState(0);
   const [exportStatus, setExportStatus] = useState('');
   const videoRef = useRef<HTMLVideoElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
   const videoUrl = useMemo(() => URL.createObjectURL(session.videoBlob), [session.videoBlob]);
 
   useEffect(() => () => URL.revokeObjectURL(videoUrl), [videoUrl]);
 
+  const totalEditorDuration = useMemo(() => segments.reduce((a, b) => a + b.duration, 0), [segments]);
+
   // Handle seamless playback transitions
   useEffect(() => {
     const v = videoRef.current;
-    if (!v) return;
+    if (!v || isExporting) return;
 
     const checkTransition = () => {
       const activeSegIdx = getSegmentIndexAtLocalTime(currentTime);
       if (activeSegIdx === -1) return;
 
       const seg = segments[activeSegIdx];
-      const localProgressInSeg = currentTime - getCumulativeDuration(activeSegIdx);
-      const actualVideoTime = seg.start + localProgressInSeg;
-
-      // If video drifted too far or hit end of segment, seek
+      // Check if video reached the end of the current segment
       if (v.currentTime >= seg.end - 0.05) {
         if (activeSegIdx < segments.length - 1) {
-          // Jump to next segment
           const nextSeg = segments[activeSegIdx + 1];
           v.currentTime = nextSeg.start;
         } else {
-          // Loop back to start or pause
           v.pause();
           v.currentTime = segments[0].start;
+          setCurrentTime(0);
         }
       }
     };
 
-    const interval = setInterval(checkTransition, 100);
+    const interval = setInterval(checkTransition, 50);
     return () => clearInterval(interval);
-  }, [currentTime, segments]);
+  }, [currentTime, segments, isExporting]);
 
   const getCumulativeDuration = (index: number) => {
     return segments.slice(0, index).reduce((acc, s) => acc + s.duration, 0);
@@ -408,10 +407,27 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
   const getSegmentIndexAtLocalTime = (localTime: number) => {
     let acc = 0;
     for (let i = 0; i < segments.length; i++) {
-      if (localTime >= acc && localTime <= acc + segments[i].duration) return i;
+      if (localTime >= acc && localTime < acc + segments[i].duration + 0.001) return i;
       acc += segments[i].duration;
     }
     return -1;
+  };
+
+  const scrub = (e: React.MouseEvent | React.TouchEvent) => {
+    if (!timelineRef.current || !videoRef.current) return;
+    const rect = timelineRef.current.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+    const percentage = x / rect.width;
+    const targetLocalTime = percentage * totalEditorDuration;
+
+    const segIdx = getSegmentIndexAtLocalTime(targetLocalTime);
+    if (segIdx !== -1) {
+      const seg = segments[segIdx];
+      const timeInSeg = targetLocalTime - getCumulativeDuration(segIdx);
+      videoRef.current.currentTime = seg.start + timeInSeg;
+      setCurrentTime(targetLocalTime);
+    }
   };
 
   const split = () => {
@@ -422,7 +438,8 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
     const localStart = getCumulativeDuration(activeIdx);
     const splitPointInSource = s.start + (currentTime - localStart);
 
-    if (splitPointInSource <= s.start + 0.1 || splitPointInSource >= s.end - 0.1) return;
+    // Don't allow splitting too close to edges
+    if (splitPointInSource <= s.start + 0.15 || splitPointInSource >= s.end - 0.15) return;
 
     const ns = [...segments];
     const colorIdx = (activeIdx + 1) % COLORS.length;
@@ -436,9 +453,10 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
 
   const deleteSegment = (id: string) => {
     if (segments.length <= 1) return;
-    setSegments(segments.filter(s => s.id !== id));
+    const ns = segments.filter(s => s.id !== id);
+    setSegments(ns);
     setCurrentTime(0);
-    if (videoRef.current) videoRef.current.currentTime = segments[0].start;
+    if (videoRef.current) videoRef.current.currentTime = ns[0].start;
   };
 
   const moveSegment = (idx: number, direction: 'left' | 'right') => {
@@ -447,26 +465,36 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
     if (target < 0 || target >= segments.length) return;
     [ns[idx], ns[target]] = [ns[target], ns[idx]];
     setSegments(ns);
+    setCurrentTime(0);
   };
 
   const exportVid = async () => {
+    if (isExporting) return;
     setIsExporting(true);
-    setExportStatus('Preparing canvas...');
+    setExportStatus('Initializing rendering engine...');
+    
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d')!;
     const v = videoRef.current!;
+    
+    // Use the native video dimensions or fallback
     canvas.width = v.videoWidth || 1280;
     canvas.height = v.videoHeight || 720;
 
     const stream = canvas.captureStream(30);
-    const rec = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
+    const rec = new MediaRecorder(stream, { 
+      mimeType: 'video/webm;codecs=vp9,opus',
+      videoBitsPerSecond: 5000000 // 5Mbps for quality
+    });
+    
     const chunks: Blob[] = [];
-    rec.ondataavailable = e => chunks.push(e.data);
+    rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
     
     return new Promise<void>((resolve) => {
       rec.onstop = async () => {
-        setExportStatus('Finalizing file...');
-        await onSave(new Blob(chunks, { type: 'video/webm' }));
+        setExportStatus('Encoding final master...');
+        const finalBlob = new Blob(chunks, { type: 'video/webm' });
+        await onSave(finalBlob);
         setIsExporting(false);
         resolve();
       };
@@ -475,46 +503,56 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
 
       (async () => {
         const fps = 30;
-        let totalFramesRendered = 0;
-        const totalDuration = segments.reduce((a, b) => a + b.duration, 0);
-        const totalFramesExpected = Math.floor(totalDuration * fps);
+        let framesRendered = 0;
+        const totalFrames = Math.floor(totalEditorDuration * fps);
 
         for (const seg of segments) {
           const segFrames = Math.floor(seg.duration * fps);
-          setExportStatus(`Processing clip: ${formatDuration(seg.duration)}`);
+          setExportStatus(`Rendering clip segment...`);
+          
           for (let i = 0; i < segFrames; i++) {
-            v.currentTime = seg.start + (i / fps);
-            await new Promise(r => { v.onseeked = r; });
+            const targetTime = seg.start + (i / fps);
+            v.currentTime = targetTime;
+            
+            // Wait for seek to complete before drawing
+            await new Promise(r => {
+              const handler = () => {
+                v.removeEventListener('seeked', handler);
+                r(null);
+              };
+              v.addEventListener('seeked', handler);
+            });
+            
             ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
-            totalFramesRendered++;
-            setExportProgress(Math.floor((totalFramesRendered / totalFramesExpected) * 100));
+            framesRendered++;
+            setExportProgress(Math.floor((framesRendered / totalFrames) * 100));
           }
         }
-        setTimeout(() => rec.stop(), 500);
+        
+        // Final buffer
+        setTimeout(() => rec.stop(), 800);
       })();
     });
   };
 
-  const totalEditorDuration = segments.reduce((a, b) => a + b.duration, 0);
-
   return (
-    <div className="fixed inset-0 z-[110] bg-black flex flex-col p-4 animate-in slide-in-from-bottom duration-500">
+    <div className="fixed inset-0 z-[110] bg-black flex flex-col p-4 animate-in slide-in-from-bottom duration-300">
       <div className="flex justify-between items-center mb-4 px-2">
         <h2 className="text-xl font-black uppercase tracking-tighter flex items-center gap-2 text-white/90">
-          <Scissors className="w-5 h-5 text-red-500" /> Sequence Editor
+          <Scissors className="w-5 h-5 text-red-500" /> Sequence Master
         </h2>
         <div className="flex gap-4 items-center">
-           <span className="text-xs font-mono text-white/40 uppercase tracking-widest">Total: {formatDuration(totalEditorDuration)}</span>
+           <span className="text-xs font-mono text-white/40 uppercase tracking-widest bg-white/5 px-2 py-1 rounded">Length: {formatDuration(totalEditorDuration)}</span>
            <button onClick={onClose} className="p-2 border border-white/10 rounded-full hover:bg-white/10 transition-colors"><X className="w-5 h-5" /></button>
         </div>
       </div>
 
-      <div className="flex-grow bg-[#050505] border border-white/5 flex items-center justify-center relative overflow-hidden rounded-xl shadow-inner group">
+      <div className="flex-grow bg-[#080808] border border-white/5 flex items-center justify-center relative overflow-hidden rounded-xl shadow-2xl group">
         <video 
           ref={videoRef} 
           src={videoUrl} 
           onTimeUpdate={() => {
-            if(!videoRef.current) return;
+            if(!videoRef.current || isExporting) return;
             const v = videoRef.current;
             const activeIdx = segments.findIndex(s => v.currentTime >= s.start && v.currentTime <= s.end + 0.05);
             if (activeIdx !== -1) {
@@ -522,75 +560,87 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
               setCurrentTime(cum + (v.currentTime - segments[activeIdx].start));
             }
           }}
-          className="max-w-full max-h-full block shadow-2xl" 
+          className="max-w-full max-h-full block shadow-2xl pointer-events-none" 
           style={{ objectFit: 'contain' }} 
         />
         
         {isExporting && (
-          <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center z-50 backdrop-blur-xl">
-            <div className="w-64 space-y-4">
-              <div className="flex justify-between text-[10px] font-black uppercase tracking-widest text-white/40">
+          <div className="absolute inset-0 bg-black/95 flex flex-col items-center justify-center z-50 backdrop-blur-xl">
+            <div className="w-80 space-y-6">
+              <div className="flex justify-between text-[11px] font-black uppercase tracking-[0.2em] text-white/60">
                 <span>{exportStatus}</span>
                 <span>{exportProgress}%</span>
               </div>
-              <div className="h-1 bg-white/5 rounded-full overflow-hidden">
-                <div style={{ width: `${exportProgress}%` }} className="h-full bg-white transition-all duration-300" />
+              <div className="h-1.5 bg-white/10 rounded-full overflow-hidden shadow-inner">
+                <div style={{ width: `${exportProgress}%` }} className="h-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.5)] transition-all duration-300" />
               </div>
-              <p className="text-center font-bold text-xs uppercase tracking-widest text-white animate-pulse">Rendering Sequence</p>
+              <p className="text-center font-bold text-[10px] uppercase tracking-[0.4em] text-white animate-pulse">Processing High-Quality Master</p>
             </div>
           </div>
         )}
       </div>
 
-      <div className="mt-6 flex flex-col gap-6 bg-black p-4 rounded-xl border border-white/5">
-        <div className="flex gap-4 items-center">
+      <div className="mt-6 flex flex-col gap-6 bg-[#0a0a0a] p-5 rounded-xl border border-white/5 shadow-2xl">
+        <div className="flex gap-5 items-center">
           <button 
             onClick={() => videoRef.current?.paused ? videoRef.current.play() : videoRef.current?.pause()} 
-            className="p-4 bg-white text-black hover:bg-gray-200 transition-all active:scale-90 shadow-lg rounded-lg"
+            className="p-5 bg-white text-black hover:bg-gray-200 transition-all active:scale-90 shadow-xl rounded-xl"
           >
             <Play className="fill-current w-6 h-6" />
           </button>
           
-          <div className="flex-grow h-20 bg-white/[0.02] relative overflow-hidden border border-white/5 rounded-lg group/timeline">
+          <div 
+            ref={timelineRef}
+            onClick={scrub}
+            className="flex-grow h-24 bg-white/[0.03] relative overflow-hidden border border-white/10 rounded-xl group/timeline cursor-crosshair"
+          >
             <div className="absolute inset-0 flex">
               {segments.map((s, idx) => (
                 <div 
                   key={s.id} 
                   style={{ width: `${(s.duration / totalEditorDuration) * 100}%` }} 
-                  className={`h-full border-r border-black/40 relative group/seg transition-all ${s.color}`}
+                  className={`h-full border-r border-black/50 relative group/seg transition-all ${s.color} hover:brightness-125`}
                 >
-                  <div className="absolute inset-0 opacity-0 group-hover/seg:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1 bg-black/40 backdrop-blur-sm z-20">
-                    <div className="flex gap-1">
-                      <button onClick={(e) => { e.stopPropagation(); moveSegment(idx, 'left'); }} className="p-1 hover:bg-white/20 rounded"><ChevronLeft className="w-3 h-3" /></button>
-                      <button onClick={(e) => { e.stopPropagation(); deleteSegment(s.id); }} className="p-1 hover:bg-red-500 rounded"><Trash2 className="w-3 h-3" /></button>
-                      <button onClick={(e) => { e.stopPropagation(); moveSegment(idx, 'right'); }} className="p-1 hover:bg-white/20 rounded"><ChevronRight className="w-3 h-3" /></button>
+                  <div className="absolute inset-0 opacity-0 group-hover/seg:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 bg-black/60 backdrop-blur-sm z-20">
+                    <div className="flex gap-2">
+                      <button onClick={(e) => { e.stopPropagation(); moveSegment(idx, 'left'); }} className="p-2 bg-white/10 hover:bg-white/30 rounded-lg transition-colors"><ChevronLeft className="w-4 h-4" /></button>
+                      <button onClick={(e) => { e.stopPropagation(); deleteSegment(s.id); }} className="p-2 bg-red-600/40 hover:bg-red-600 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+                      <button onClick={(e) => { e.stopPropagation(); moveSegment(idx, 'right'); }} className="p-2 bg-white/10 hover:bg-white/30 rounded-lg transition-colors"><ChevronRight className="w-4 h-4" /></button>
                     </div>
                   </div>
-                  <span className="absolute top-1 left-1 text-[8px] font-black uppercase tracking-tighter opacity-40">{formatDuration(s.duration)}</span>
+                  <span className="absolute top-2 left-2 text-[9px] font-black uppercase tracking-tighter opacity-50 bg-black/40 px-1 rounded">{formatDuration(s.duration)}</span>
                 </div>
               ))}
             </div>
             
+            {/* Playhead */}
             <div 
               style={{ left: `${(currentTime / totalEditorDuration) * 100}%` }} 
-              className="absolute top-0 bottom-0 w-0.5 bg-red-600 shadow-[0_0_15px_rgba(220,38,38,1)] z-30 pointer-events-none" 
+              className="absolute top-0 bottom-0 w-[3px] bg-red-600 shadow-[0_0_20px_rgba(220,38,38,1)] z-30 pointer-events-none transition-all duration-75" 
             />
           </div>
 
-          <div className="flex flex-col gap-2">
-            <button onClick={split} className="px-4 py-2 border border-white/10 hover:bg-white/10 text-[10px] font-black uppercase tracking-widest flex items-center gap-2 rounded">
-              <Scissors className="w-3 h-3" /> Split (S)
+          <div className="flex flex-col gap-3 min-w-[120px]">
+            <button onClick={split} className="px-5 py-3 border border-white/10 hover:border-white/30 hover:bg-white/5 text-[11px] font-black uppercase tracking-widest flex items-center justify-center gap-2 rounded-xl transition-all active:scale-95 shadow-lg">
+              <Scissors className="w-3.5 h-3.5" /> Split (S)
             </button>
-            <button onClick={() => { setSegments([{ id: '1', start: 0, end: session.durationSeconds, duration: session.durationSeconds, color: COLORS[0] }]); }} className="px-4 py-2 border border-white/10 hover:bg-white/10 text-[10px] font-black uppercase tracking-widest flex items-center gap-2 rounded text-white/40">
-              <RotateCcw className="w-3 h-3" /> Reset
+            <button onClick={() => { setSegments([{ id: '1', start: 0, end: session.durationSeconds, duration: session.durationSeconds, color: COLORS[0] }]); setCurrentTime(0); }} className="px-5 py-3 border border-white/5 hover:bg-white/5 text-[11px] font-black uppercase tracking-widest flex items-center justify-center gap-2 rounded-xl text-white/30 transition-all">
+              <RotateCcw className="w-3.5 h-3.5" /> Reset
             </button>
           </div>
         </div>
 
         <div className="flex justify-between items-center px-2">
-           <p className="text-[10px] text-white/20 uppercase font-black tracking-[0.2em] italic">Timeline: Rearrange, split, and cull segments to build your sequence</p>
-           <button onClick={exportVid} disabled={isExporting} className="px-12 py-4 bg-white text-black font-black uppercase tracking-[0.2em] hover:bg-gray-200 active:scale-95 transition-all rounded shadow-2xl">
-             Export Final
+           <div className="flex flex-col">
+             <p className="text-[10px] text-white/30 uppercase font-black tracking-[0.2em]">Sequence Timeline</p>
+             <p className="text-[9px] text-white/20 italic tracking-wider">Scrub the track to navigate • Press S to cut • Drag segments to reorder</p>
+           </div>
+           <button 
+             onClick={exportVid} 
+             disabled={isExporting} 
+             className="px-14 py-5 bg-white text-black font-black uppercase tracking-[0.25em] hover:bg-gray-200 active:scale-95 transition-all rounded-xl shadow-[0_10px_40px_rgba(255,255,255,0.1)] disabled:opacity-50"
+           >
+             Render Final Master
            </button>
         </div>
       </div>
@@ -609,8 +659,8 @@ const LibraryCard: React.FC<{ session: any; onDelete: (id: string) => void; onPr
   };
 
   return (
-    <div className="border border-white/10 p-5 flex flex-col md:flex-row gap-6 bg-white/[0.01] hover:bg-white/[0.03] hover:border-white/30 transition-all group relative overflow-hidden rounded-lg">
-      <div className={`bg-black md:w-52 overflow-hidden border border-white/10 cursor-pointer relative transition-transform group-hover:scale-[1.02] rounded ${session.layoutStyle === 'SHORTS' ? 'aspect-[9/16]' : 'aspect-video'}`} onClick={() => onPreview(session)}>
+    <div className="border border-white/10 p-5 flex flex-col md:flex-row gap-6 bg-white/[0.01] hover:bg-white/[0.03] hover:border-white/30 transition-all group relative overflow-hidden rounded-xl">
+      <div className={`bg-black md:w-52 overflow-hidden border border-white/10 cursor-pointer relative transition-transform group-hover:scale-[1.02] rounded-lg ${session.layoutStyle === 'SHORTS' ? 'aspect-[9/16]' : 'aspect-video'}`} onClick={() => onPreview(session)}>
         <video src={url} muted className="w-full h-full object-cover opacity-40 group-hover:opacity-100 transition-opacity" />
         <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-[2px]">
            <Play className="fill-white w-10 h-10 drop-shadow-2xl" />
@@ -620,22 +670,22 @@ const LibraryCard: React.FC<{ session: any; onDelete: (id: string) => void; onPr
         <div className="flex justify-between items-start">
           <div className="space-y-1">
             <h3 className="font-mono font-bold text-xl tracking-tighter group-hover:text-white transition-colors">{session.id}</h3>
-            <p className="text-[10px] text-white/30 uppercase tracking-[0.2em] font-bold">{new Date(session.createdAtISO).toLocaleDateString()}</p>
+            <p className="text-[10px] text-white/30 uppercase tracking-[0.2em] font-bold">{new Date(session.createdAtISO).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}</p>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => onZip(session)} className="p-2.5 border border-white/10 hover:border-white/40 hover:bg-white/10 transition-all rounded" title="Export Full ZIP"><Archive className="w-4 h-4" /></button>
-            <button onClick={handleDownloadWebm} className="p-2.5 border border-white/10 hover:border-white/40 hover:bg-white/10 transition-all rounded" title="Download WebM"><Download className="w-4 h-4" /></button>
-            <button onClick={() => onDelete(session.id)} className="p-2.5 border border-red-600/20 text-red-500 hover:bg-red-600 hover:text-white transition-all rounded" title="Delete"><Trash2 className="w-4 h-4" /></button>
+            <button onClick={() => onZip(session)} className="p-3 border border-white/10 hover:border-white/40 hover:bg-white/10 transition-all rounded-lg" title="Export Full ZIP"><Archive className="w-4 h-4" /></button>
+            <button onClick={handleDownloadWebm} className="p-3 border border-white/10 hover:border-white/40 hover:bg-white/10 transition-all rounded-lg" title="Download Source WebM"><Download className="w-4 h-4" /></button>
+            <button onClick={() => onDelete(session.id)} className="p-3 border border-red-600/20 text-red-500 hover:bg-red-600 hover:text-white transition-all rounded-lg" title="Delete"><Trash2 className="w-4 h-4" /></button>
           </div>
         </div>
         <div className="flex flex-wrap gap-2 text-[10px] text-white/50 uppercase font-black tracking-widest">
-          <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-sm flex items-center gap-1.5"><Monitor className="w-3 h-3" /> {session.layoutStyle}</span>
-          <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-sm">{formatDuration(session.durationSeconds)}</span>
-          <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-sm">{session.quality.resolution}</span>
+          <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-md flex items-center gap-1.5"><Monitor className="w-3 h-3" /> {session.layoutStyle}</span>
+          <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-md">{formatDuration(session.durationSeconds)}</span>
+          <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-md">{session.quality.resolution}</span>
         </div>
         <div className="flex gap-4 pt-2">
-          <button onClick={() => onEdit(session)} className="px-6 py-2.5 border border-white/10 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white hover:text-black hover:border-white transition-all flex items-center gap-2 active:scale-95 shadow-lg rounded"><Scissors className="w-3.5 h-3.5" /> Edit Master</button>
-          <button onClick={() => onPreview(session)} className="px-6 py-2.5 border border-white/10 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all flex items-center gap-2 active:scale-95 rounded"><Maximize2 className="w-3.5 h-3.5" /> Preview</button>
+          <button onClick={() => onEdit(session)} className="px-7 py-3 border border-white/10 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white hover:text-black hover:border-white transition-all flex items-center gap-2 active:scale-95 shadow-xl rounded-lg"><Scissors className="w-3.5 h-3.5" /> Open Editor</button>
+          <button onClick={() => onPreview(session)} className="px-7 py-3 border border-white/10 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all flex items-center gap-2 active:scale-95 rounded-lg"><Maximize2 className="w-3.5 h-3.5" /> Preview</button>
         </div>
       </div>
     </div>
