@@ -11,7 +11,8 @@ import {
   X,
   FileArchive,
   Info,
-  ChevronRight
+  ChevronRight,
+  Video
 } from 'lucide-react';
 import { RecordingSession, LayoutStyle, QualityConfig } from './types';
 import { VideoRecorder } from './services/recorder';
@@ -113,6 +114,7 @@ const App: React.FC = () => {
   const recorderRef = useRef<VideoRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
 
   useEffect(() => {
     loadSessions();
@@ -122,7 +124,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (isRecording && recorderRef.current && canvasContainerRef.current) {
       const canvas = recorderRef.current.getCanvas();
-      canvas.className = "w-full h-full object-contain";
+      canvas.className = "w-full h-full object-contain cursor-grab active:cursor-grabbing";
       canvasContainerRef.current.innerHTML = '';
       canvasContainerRef.current.appendChild(canvas);
     }
@@ -199,6 +201,34 @@ const App: React.FC = () => {
     }, null, 2));
     const content = await zip.generateAsync({ type: "blob" });
     triggerDownload(URL.createObjectURL(content), `${session.id}_bundle.zip`);
+  };
+
+  const handleCanvasInteraction = (e: React.MouseEvent | React.TouchEvent) => {
+    if (!isRecording || layout !== 'CIRCLE' || !recorderRef.current) return;
+    
+    const canvas = recorderRef.current.getCanvas();
+    const rect = canvas.getBoundingClientRect();
+    
+    let clientX, clientY;
+    if ('touches' in e) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else {
+      clientX = (e as React.MouseEvent).clientX;
+      clientY = (e as React.MouseEvent).clientY;
+    }
+
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const y = ((clientY - rect.top) / rect.height) * 100;
+
+    if (e.type === 'mousedown' || e.type === 'touchstart') {
+      isDraggingRef.current = true;
+      recorderRef.current.updateWebcamPos(x, y);
+    } else if ((e.type === 'mousemove' || e.type === 'touchmove') && isDraggingRef.current) {
+      recorderRef.current.updateWebcamPos(x, y);
+    } else if (e.type === 'mouseup' || e.type === 'touchend' || e.type === 'mouseleave') {
+      isDraggingRef.current = false;
+    }
   };
 
   return (
@@ -280,10 +310,19 @@ const App: React.FC = () => {
               </div>
 
               <div className="lg:col-span-8 h-full flex items-center">
-                <div className={`bg-[#050505] rounded-[1.5rem] overflow-hidden border border-white/10 shadow-2xl relative flex items-center justify-center w-full transition-all duration-500 ${layout === 'SHORTS' ? 'aspect-[9/16] max-h-[calc(100vh-180px)]' : 'aspect-video max-h-[calc(100vh-180px)]'}`}>
-                  <div ref={canvasContainerRef} className="w-full h-full"></div>
+                <div 
+                  className={`bg-[#050505] rounded-[1.5rem] overflow-hidden border border-white/10 shadow-2xl relative flex items-center justify-center w-full transition-all duration-500 touch-none ${layout === 'SHORTS' ? 'aspect-[9/16] max-h-[calc(100vh-180px)]' : 'aspect-video max-h-[calc(100vh-180px)]'}`}
+                  onMouseDown={handleCanvasInteraction}
+                  onMouseMove={handleCanvasInteraction}
+                  onMouseUp={handleCanvasInteraction}
+                  onMouseLeave={handleCanvasInteraction}
+                  onTouchStart={handleCanvasInteraction}
+                  onTouchMove={handleCanvasInteraction}
+                  onTouchEnd={handleCanvasInteraction}
+                >
+                  <div ref={canvasContainerRef} className="w-full h-full pointer-events-none"></div>
                   {!isRecording && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center opacity-10">
+                    <div className="absolute inset-0 flex flex-col items-center justify-center opacity-10 pointer-events-none">
                       <Monitor className="w-10 h-10 mb-3" />
                       <span className="text-[9px] font-black uppercase tracking-[0.4em]">Ready</span>
                     </div>
@@ -346,8 +385,12 @@ const App: React.FC = () => {
             </div>
             <div className="p-5 border-t border-white/10 flex justify-between items-center">
                <div className="flex gap-3">
-                  <button onClick={() => triggerDownload(URL.createObjectURL(previewingSession.videoBlob), `${previewingSession.id}.webm`)} className="px-5 py-2.5 bg-white/5 text-[9px] font-black uppercase tracking-widest rounded-lg hover:bg-white/10 transition-all">Download</button>
-                  <button onClick={() => handleZipDownload(previewingSession)} className="px-5 py-2.5 bg-white text-black text-[9px] font-black uppercase tracking-widest rounded-lg hover:bg-white/90 transition-all">Bundle Zip</button>
+                  <button onClick={() => triggerDownload(URL.createObjectURL(previewingSession.videoBlob), `${previewingSession.id}.webm`)} className="px-5 py-2.5 bg-white/5 text-[9px] font-black uppercase tracking-widest rounded-lg hover:bg-white/10 transition-all flex items-center gap-2">
+                    <Download className="w-3.5 h-3.5" /> WebM
+                  </button>
+                  <button onClick={() => handleZipDownload(previewingSession)} className="px-5 py-2.5 bg-white text-black text-[9px] font-black uppercase tracking-widest rounded-lg hover:bg-white/90 transition-all flex items-center gap-2">
+                    <FileArchive className="w-3.5 h-3.5" /> Bundle Zip
+                  </button>
                </div>
                <button onClick={() => { if(confirm("Delete?")) { deleteSession(previewingSession.id).then(() => { setPreviewingSession(null); loadSessions(); }); } }} className="text-[9px] font-black text-red-500 uppercase">Delete</button>
             </div>
@@ -383,7 +426,14 @@ const LibraryCard: React.FC<{
         <p className="text-[8px] text-white/30 font-bold uppercase">{formatDuration(session.durationSeconds)} duration</p>
       </div>
       <div className="flex gap-1.5">
-        <button onClick={() => onZip(session)} className="flex-grow py-2.5 bg-white text-black text-[8px] font-black uppercase rounded-lg hover:bg-white/90 transition-all">Zip</button>
+        <button 
+          onClick={(e) => { e.stopPropagation(); triggerDownload(url, `${session.id}.webm`); }} 
+          className="p-2.5 bg-white/5 text-white/40 hover:text-white rounded-lg transition-all border border-white/5 flex items-center justify-center" 
+          title="Download WebM"
+        >
+          <Video className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={() => onZip(session)} className="flex-grow py-2.5 bg-white text-black text-[8px] font-black uppercase rounded-lg hover:bg-white/90 transition-all">Zip Export</button>
         <button onClick={() => { if(confirm("Delete?")) onDelete(session.id); }} className="p-2.5 border border-white/5 text-white/20 hover:text-red-500 rounded-lg transition-all"><Trash2 className="w-3.5 h-3.5" /></button>
       </div>
     </div>
