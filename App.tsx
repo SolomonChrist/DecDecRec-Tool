@@ -52,12 +52,25 @@ const formatDuration = (sec: number) => {
   return `${m}:${s.toString().padStart(2, '0')}`;
 };
 
+/**
+ * Generates a human-readable timestamp string: DD-Mon-YYYY_HH-mm-ss
+ */
 const formatTimestamp = () => {
   const now = new Date();
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${now.getDate().toString().padStart(2, '0')}-${months[now.getMonth()]}-${now.getFullYear()}_${now.getHours().toString().padStart(2, '0')}-${now.getMinutes().toString().padStart(2, '0')}-${now.getSeconds().toString().padStart(2, '0')}`;
+  const day = now.getDate().toString().padStart(2, '0');
+  const month = months[now.getMonth()];
+  const year = now.getFullYear();
+  const hours = now.getHours().toString().padStart(2, '0');
+  const minutes = now.getMinutes().toString().padStart(2, '0');
+  const seconds = now.getSeconds().toString().padStart(2, '0');
+  return `${day}-${month}-${year}_${hours}-${minutes}-${seconds}`;
 };
 
+/**
+ * Robustly triggers a file download in the browser.
+ * Appends the anchor to the DOM to satisfy security requirements in some browsers.
+ */
 const triggerDownload = (url: string, filename: string) => {
   const a = document.createElement('a');
   a.style.display = 'none';
@@ -65,10 +78,12 @@ const triggerDownload = (url: string, filename: string) => {
   a.download = filename;
   document.body.appendChild(a);
   a.click();
-  // Small delay before cleanup to ensure browser initiates download
+  // Keep the element for a bit to ensure the browser processes the click event correctly
   setTimeout(() => {
-    document.body.removeChild(a);
-  }, 100);
+    if (document.body.contains(a)) {
+      document.body.removeChild(a);
+    }
+  }, 2000);
 };
 
 const App: React.FC = () => {
@@ -237,7 +252,7 @@ const App: React.FC = () => {
     const content = await zip.generateAsync({ type: "blob" });
     const url = URL.createObjectURL(content);
     triggerDownload(url, `${session.id}_bundle.zip`);
-    // Cleanup ZIP blob URL after some time
+    // Cleanup ZIP blob URL after some time to ensure the download started
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   };
 
@@ -269,7 +284,7 @@ const App: React.FC = () => {
                 <h2 className="text-lg font-bold uppercase tracking-widest">Devices</h2>
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold opacity-60">WEBCAM</span>
+                    <span className="text-sm font-bold opacity-60 uppercase">Webcam</span>
                     <button onClick={() => setUseWebcam(!useWebcam)} className={`px-4 py-1 border transition-colors text-xs font-bold ${useWebcam ? 'bg-white text-black' : 'border-white/20 hover:bg-white/5'}`}>{useWebcam ? 'ON' : 'OFF'}</button>
                   </div>
                   {useWebcam && (
@@ -360,7 +375,7 @@ const App: React.FC = () => {
 
         {editingSession && (
           <VideoEditor session={editingSession} onClose={() => setEditingSession(null)} onSave={async (b) => {
-            const id = `EDIT_${editingSession.id}_${Date.now()}`;
+            const id = `EDITED_${formatTimestamp()}`;
             await saveSession({ ...editingSession, id, videoBlob: b, createdAtISO: new Date().toISOString() });
             loadSessions(); setEditingSession(null);
           }} />
@@ -448,7 +463,6 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
           if(!videoRef.current) return;
           let cum = 0;
           const v = videoRef.current;
-          const totalEditorDur = segments.reduce((a, b) => a + b.duration, 0);
           const seg = segments.find((s, idx) => {
              const startsAt = segments.slice(0, idx).reduce((acc, x) => acc + x.duration, 0);
              if (v.currentTime >= s.start && v.currentTime <= s.end + 0.1) { cum = startsAt; return true; }
@@ -483,7 +497,12 @@ const LibraryCard: React.FC<{ session: any; onDelete: (id: string) => void; onPr
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
 
   const handleDownloadWebm = () => {
-    triggerDownload(url, `${session.id}.webm`);
+    // Creating a fresh URL for the download prevents issues where the memoized preview URL
+    // might have been "interrupted" or invalidated by a React cycle during the download trigger.
+    const downloadUrl = URL.createObjectURL(session.videoBlob);
+    triggerDownload(downloadUrl, `${session.id}.webm`);
+    // Revoke the temporary download URL after a safe delay
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 5000);
   };
 
   return (
@@ -520,7 +539,6 @@ const LibraryCard: React.FC<{ session: any; onDelete: (id: string) => void; onPr
           <button onClick={() => onPreview(session)} className="px-6 py-2.5 border border-white/10 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all flex items-center gap-2 active:scale-95 shadow-lg"><Maximize2 className="w-3.5 h-3.5" /> Preview</button>
         </div>
       </div>
-      {/* Decorative background element */}
       <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-white/5 rounded-full blur-3xl opacity-0 group-hover:opacity-20 transition-opacity"></div>
     </div>
   );
