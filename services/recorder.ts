@@ -28,12 +28,10 @@ export class VideoRecorder {
     this.canvas.width = 1280;
     this.canvas.height = 720;
 
-    // Standard video element config for streaming
     [this.screenVideo, this.webcamVideo].forEach(v => {
       v.setAttribute('playsinline', '');
       v.setAttribute('autoplay', '');
       v.muted = true;
-      // Critical: Prevent browser from pausing video when tab is hidden
       v.onpause = () => v.play().catch(() => {});
     });
   }
@@ -108,7 +106,8 @@ export class VideoRecorder {
       const stream = this.canvas.captureStream(quality.fps);
       this.audioStream.getAudioTracks().forEach(track => stream.addTrack(track));
 
-      this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' });
+      const options = { mimeType: 'video/webm;codecs=vp9,opus' };
+      this.mediaRecorder = new MediaRecorder(stream, options);
       this.chunks = [];
 
       this.mediaRecorder.ondataavailable = (e) => {
@@ -117,8 +116,6 @@ export class VideoRecorder {
 
       this.mediaRecorder.start(100);
       
-      // Use setInterval instead of requestAnimationFrame for better background performance
-      // browsers throttle background setInterval to 1s, but that's better than 0.
       this.renderInterval = window.setInterval(() => {
         this.drawFrame(this.currentLayout);
       }, 1000 / this.targetFps);
@@ -156,12 +153,10 @@ export class VideoRecorder {
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
     if (layout === 'CIRCLE') {
-      // Screen background
       if (this.screenVideo.readyState >= 2) {
         this.ctx.drawImage(this.screenVideo, 0, 0, this.canvas.width, this.canvas.height);
       }
       
-      // Circle overlay
       if (this.webcamStream && this.webcamVideo.readyState >= 2) {
         const cx = (this.webcamPos.x / 100) * this.canvas.width;
         const cy = (this.webcamPos.y / 100) * this.canvas.height;
@@ -191,35 +186,50 @@ export class VideoRecorder {
       }
       this.ctx.strokeStyle = 'white';
       this.ctx.lineWidth = 6;
-      this.ctx.strokeRect(0, halfH, w, 0);
+      this.ctx.beginPath();
+      this.ctx.moveTo(0, halfH);
+      this.ctx.lineTo(w, halfH);
+      this.ctx.stroke();
     }
   }
 
-  stop(): Blob | null {
-    if (this.renderInterval) {
-      clearInterval(this.renderInterval);
-      this.renderInterval = null;
-    }
-    
-    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+  public async stop(): Promise<Blob | null> {
+    return new Promise((resolve) => {
+      if (!this.mediaRecorder || this.mediaRecorder.state === 'inactive') {
+        this.cleanup();
+        resolve(null);
+        return;
+      }
+
+      this.mediaRecorder.onstop = () => {
+        const blob = this.chunks.length > 0 ? new Blob(this.chunks, { type: 'video/webm' }) : null;
+        this.chunks = [];
+        this.cleanup();
+        resolve(blob);
+      };
+
       this.mediaRecorder.stop();
-    }
-    
+      if (this.renderInterval) {
+        clearInterval(this.renderInterval);
+        this.renderInterval = null;
+      }
+    });
+  }
+
+  private cleanup() {
     this.screenStream?.getTracks().forEach(t => t.stop());
     this.webcamStream?.getTracks().forEach(t => t.stop());
     this.audioStream?.getTracks().forEach(t => t.stop());
-
-    const blob = this.chunks.length > 0 ? new Blob(this.chunks, { type: 'video/webm' }) : null;
-    this.chunks = [];
-    return blob;
+    this.screenVideo.srcObject = null;
+    this.webcamVideo.srcObject = null;
   }
 
-  pause() { 
+  public pause() { 
     this.mediaRecorder?.pause(); 
     if (this.renderInterval) clearInterval(this.renderInterval);
   }
   
-  resume() { 
+  public resume() { 
     this.mediaRecorder?.resume(); 
     this.renderInterval = window.setInterval(() => this.drawFrame(this.currentLayout), 1000 / this.targetFps);
   }
