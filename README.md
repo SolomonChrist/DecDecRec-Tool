@@ -12,7 +12,6 @@ How did I come up with the name? It was December and I wanted to put December Re
 ## 📸 Demo & Screenshots
 ![Screenshot 1](screenshot_1.jpg)
 ![Screenshot 2](screenshot_2.jpg)
-![Screenshot 3](screenshot_3.jpg)
 
 ## Vision
 To provide a private, high-performance recording environment that respects user data. By leveraging local-first technologies like IndexedDB, WebAudio, and WebAssembly (FFmpeg), we eliminate the need for cloud uploads for processing, giving you full control over your media.
