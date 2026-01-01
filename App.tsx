@@ -28,9 +28,11 @@ import {
   Scissors,
   GripHorizontal,
   ChevronRight,
+  ChevronLeft,
   Save,
   Loader2,
-  Archive
+  Archive,
+  RotateCcw
 } from 'lucide-react';
 import { RecordingSession, LayoutStyle, QualityConfig, StorageEstimate, TranscriptionSettings } from './types';
 import { VideoRecorder } from './services/recorder';
@@ -44,7 +46,17 @@ interface VideoSegment {
   start: number;
   end: number;
   duration: number;
+  color: string;
 }
+
+const COLORS = [
+  'bg-blue-500/20 border-blue-500',
+  'bg-purple-500/20 border-purple-500',
+  'bg-emerald-500/20 border-emerald-500',
+  'bg-amber-500/20 border-amber-500',
+  'bg-pink-500/20 border-pink-500',
+  'bg-indigo-500/20 border-indigo-500'
+];
 
 const formatDuration = (sec: number) => {
   const m = Math.floor(sec / 60);
@@ -52,9 +64,6 @@ const formatDuration = (sec: number) => {
   return `${m}:${s.toString().padStart(2, '0')}`;
 };
 
-/**
- * Generates a human-readable timestamp string: DD-Mon-YYYY_HH-mm-ss
- */
 const formatTimestamp = () => {
   const now = new Date();
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -67,10 +76,6 @@ const formatTimestamp = () => {
   return `${day}-${month}-${year}_${hours}-${minutes}-${seconds}`;
 };
 
-/**
- * Robustly triggers a file download in the browser.
- * Appends the anchor to the DOM to satisfy security requirements in some browsers.
- */
 const triggerDownload = (url: string, filename: string) => {
   const a = document.createElement('a');
   a.style.display = 'none';
@@ -78,11 +83,8 @@ const triggerDownload = (url: string, filename: string) => {
   a.download = filename;
   document.body.appendChild(a);
   a.click();
-  // Keep the element for a bit to ensure the browser processes the click event correctly
   setTimeout(() => {
-    if (document.body.contains(a)) {
-      document.body.removeChild(a);
-    }
+    if (document.body.contains(a)) document.body.removeChild(a);
   }, 2000);
 };
 
@@ -93,15 +95,9 @@ const App: React.FC = () => {
   const [elapsed, setElapsed] = useState(0);
   const [sessions, setSessions] = useState<RecordingSession[]>([]);
   const [storage, setStorage] = useState<StorageEstimate | null>(null);
-  const [policyError, setPolicyError] = useState<string | null>(null);
   const [previewingSession, setPreviewingSession] = useState<RecordingSession | null>(null);
   const [editingSession, setEditingSession] = useState<RecordingSession | null>(null);
   
-  const [permissions, setPermissions] = useState<{
-    camera: PermissionState | 'unknown';
-    microphone: PermissionState | 'unknown';
-  }>({ camera: 'unknown', microphone: 'unknown' });
-
   const [layout, setLayout] = useState<LayoutStyle>('CIRCLE');
   const [useWebcam, setUseWebcam] = useState(true);
   const [quality, setQuality] = useState<QualityConfig>({ resolution: '1080p', fps: 30 });
@@ -128,7 +124,6 @@ const App: React.FC = () => {
     loadSessions();
     loadDevices();
     updateStorageEstimate();
-    checkPermissions();
   }, []);
 
   useEffect(() => {
@@ -139,18 +134,6 @@ const App: React.FC = () => {
       canvasContainerRef.current.appendChild(canvas);
     }
   }, [isRecording, layout]);
-
-  const checkPermissions = async () => {
-    try {
-      if (navigator.permissions && navigator.permissions.query) {
-        const cam = await navigator.permissions.query({ name: 'camera' as any });
-        const mic = await navigator.permissions.query({ name: 'microphone' as any });
-        setPermissions({ camera: cam.state, microphone: mic.state });
-        cam.onchange = () => setPermissions(prev => ({ ...prev, camera: cam.state }));
-        mic.onchange = () => setPermissions(prev => ({ ...prev, microphone: mic.state }));
-      }
-    } catch (e) {}
-  };
 
   const loadSessions = async () => {
     const s = await getAllSessions();
@@ -166,9 +149,8 @@ const App: React.FC = () => {
       const mic = devs.find(d => d.kind === 'audioinput');
       if (cam && !webcamId) setWebcamId(cam.deviceId);
       if (mic && !micId) setMicId(mic.deviceId);
-      setPolicyError(null);
     } catch (err: any) {
-      if (err.name === 'SecurityError') setPolicyError("Permissions Policy blocked hardware access.");
+      console.error("Device access error", err);
     }
   };
 
@@ -201,9 +183,7 @@ const App: React.FC = () => {
     if (!recorderRef.current) return;
     setIsRecording(false);
     if (timerRef.current) clearInterval(timerRef.current);
-    
     const blob = await recorderRef.current.stop();
-    
     if (blob) {
       const now = new Date();
       const id = formatTimestamp();
@@ -248,11 +228,9 @@ const App: React.FC = () => {
       layout: session.layoutStyle,
       quality: session.quality
     }, null, 2));
-    
     const content = await zip.generateAsync({ type: "blob" });
     const url = URL.createObjectURL(content);
     triggerDownload(url, `${session.id}_bundle.zip`);
-    // Cleanup ZIP blob URL after some time to ensure the download started
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   };
 
@@ -302,12 +280,12 @@ const App: React.FC = () => {
               </section>
 
               {!isRecording ? (
-                <button onClick={startRecording} className="w-full py-6 bg-white text-black font-black text-2xl hover:bg-gray-200 transition-colors shadow-2xl active:scale-[0.98]">START RECORDING</button>
+                <button onClick={startRecording} className="w-full py-6 bg-white text-black font-black text-2xl hover:bg-gray-200 transition-colors shadow-2xl">START RECORDING</button>
               ) : (
                 <div className="space-y-4">
                   <div className="flex gap-4">
                     <button onClick={togglePause} className="flex-1 py-4 border border-white flex items-center justify-center gap-2 hover:bg-white/10 font-bold">{isPaused ? <Play className="w-5 h-5 fill-white" /> : <Pause className="w-5 h-5 fill-white" />} {isPaused ? 'RESUME' : 'PAUSE'}</button>
-                    <button onClick={stopRecording} className="flex-1 py-4 bg-red-600 text-white font-bold flex items-center justify-center gap-2 hover:bg-red-700 active:scale-[0.98] transition-all"><StopCircle /> STOP</button>
+                    <button onClick={stopRecording} className="flex-1 py-4 bg-red-600 text-white font-bold flex items-center justify-center gap-2 hover:bg-red-700 transition-all"><StopCircle /> STOP</button>
                   </div>
                   <div className="text-center p-4 border border-white/10 bg-white/5 font-mono text-4xl tabular-nums shadow-inner">{formatDuration(elapsed)}</div>
                 </div>
@@ -316,7 +294,7 @@ const App: React.FC = () => {
 
             <div className="space-y-6">
               <section 
-                className={`border border-white/20 bg-black relative overflow-hidden flex items-center justify-center transition-all ${layout === 'SHORTS' ? 'aspect-[9/16] max-h-[600px] mx-auto shadow-2xl' : 'aspect-video shadow-2xl'}`}
+                className={`border border-white/20 bg-black relative overflow-hidden flex items-center justify-center transition-all ${layout === 'SHORTS' ? 'aspect-[9/16] max-h-[600px] mx-auto' : 'aspect-video shadow-2xl'}`}
                 onMouseDown={() => (isDraggingWebcam.current = true)}
                 onMouseUp={() => (isDraggingWebcam.current = false)}
                 onMouseLeave={() => (isDraggingWebcam.current = false)}
@@ -328,7 +306,7 @@ const App: React.FC = () => {
                   Live Preview
                 </div>}
               </section>
-              {isRecording && <p className="text-[10px] text-white/40 uppercase text-center italic tracking-widest animate-pulse">Tip: Click & drag webcam circle to move it live</p>}
+              {isRecording && <p className="text-[10px] text-white/40 uppercase text-center italic tracking-widest animate-pulse">Tip: Drag circle overlay to reposition live</p>}
             </div>
           </div>
         )}
@@ -338,7 +316,7 @@ const App: React.FC = () => {
             <div className="flex justify-between items-end border-b border-white/10 pb-4">
               <h2 className="text-2xl font-bold uppercase tracking-tight">Library</h2>
               {sessions.length > 0 && (
-                <button onClick={async () => { if(confirm("Clear all recorded sessions?")) { await clearAllSessions(); loadSessions(); } }} className="text-xs font-bold text-red-500 hover:text-red-400 uppercase tracking-widest transition-colors flex items-center gap-2">
+                <button onClick={async () => { if(confirm("Clear library?")) { await clearAllSessions(); loadSessions(); } }} className="text-xs font-bold text-red-500 hover:text-red-400 uppercase tracking-widest transition-colors flex items-center gap-2">
                   <Trash2 className="w-3 h-3" /> Clear Library
                 </button>
               )}
@@ -346,7 +324,7 @@ const App: React.FC = () => {
             {sessions.length === 0 ? (
               <div className="p-20 text-center text-white/10 flex flex-col items-center">
                 <Database className="w-16 h-16 mb-4 opacity-20" />
-                <p className="uppercase font-black tracking-widest opacity-20">No recordings stored locally</p>
+                <p className="uppercase font-black tracking-widest opacity-20">Library Empty</p>
               </div>
             ) : (
               <div className="grid gap-4">
@@ -359,15 +337,11 @@ const App: React.FC = () => {
         )}
 
         {previewingSession && previewUrl && (
-          <div className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4 backdrop-blur-md transition-opacity">
+          <div className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4 backdrop-blur-md">
             <div className="max-w-5xl w-full bg-black border border-white/20 p-2 relative shadow-[0_0_100px_rgba(255,255,255,0.1)]">
               <button onClick={() => setPreviewingSession(null)} className="absolute -top-4 -right-4 z-10 p-2 bg-white text-black rounded-full shadow-2xl transition-transform hover:scale-110"><X className="w-6 h-6" /></button>
               <div className="flex flex-col gap-2">
                 <video src={previewUrl} controls autoPlay className="w-full max-h-[80vh] object-contain" />
-                <div className="flex justify-between items-center p-2 font-mono text-[10px] text-white/40 uppercase">
-                   <span>ID: {previewingSession.id}</span>
-                   <span>Duration: {formatDuration(previewingSession.durationSeconds)}</span>
-                </div>
               </div>
             </div>
           </div>
@@ -386,37 +360,98 @@ const App: React.FC = () => {
 };
 
 const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blob) => Promise<void> }> = ({ session, onClose, onSave }) => {
-  const [segments, setSegments] = useState<VideoSegment[]>([{ id: '1', start: 0, end: session.durationSeconds, duration: session.durationSeconds }]);
+  const [segments, setSegments] = useState<VideoSegment[]>([{ id: '1', start: 0, end: session.durationSeconds, duration: session.durationSeconds, color: COLORS[0] }]);
   const [currentTime, setCurrentTime] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportStatus, setExportStatus] = useState('');
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoUrl = useMemo(() => URL.createObjectURL(session.videoBlob), [session.videoBlob]);
 
   useEffect(() => () => URL.revokeObjectURL(videoUrl), [videoUrl]);
 
+  // Handle seamless playback transitions
   useEffect(() => {
-    const handleS = (e: KeyboardEvent) => { if (e.key === 's' || e.key === 'S') split(); };
-    window.addEventListener('keydown', handleS);
-    return () => window.removeEventListener('keydown', handleS);
+    const v = videoRef.current;
+    if (!v) return;
+
+    const checkTransition = () => {
+      const activeSegIdx = getSegmentIndexAtLocalTime(currentTime);
+      if (activeSegIdx === -1) return;
+
+      const seg = segments[activeSegIdx];
+      const localProgressInSeg = currentTime - getCumulativeDuration(activeSegIdx);
+      const actualVideoTime = seg.start + localProgressInSeg;
+
+      // If video drifted too far or hit end of segment, seek
+      if (v.currentTime >= seg.end - 0.05) {
+        if (activeSegIdx < segments.length - 1) {
+          // Jump to next segment
+          const nextSeg = segments[activeSegIdx + 1];
+          v.currentTime = nextSeg.start;
+        } else {
+          // Loop back to start or pause
+          v.pause();
+          v.currentTime = segments[0].start;
+        }
+      }
+    };
+
+    const interval = setInterval(checkTransition, 100);
+    return () => clearInterval(interval);
   }, [currentTime, segments]);
 
-  const split = () => {
-    let cum = 0;
+  const getCumulativeDuration = (index: number) => {
+    return segments.slice(0, index).reduce((acc, s) => acc + s.duration, 0);
+  };
+
+  const getSegmentIndexAtLocalTime = (localTime: number) => {
+    let acc = 0;
     for (let i = 0; i < segments.length; i++) {
-      const s = segments[i];
-      if (currentTime > cum && currentTime < cum + s.duration) {
-        const splitTime = s.start + (currentTime - cum);
-        const ns = [...segments];
-        ns.splice(i, 1, { ...s, end: splitTime, duration: splitTime - s.start }, { id: Math.random().toString(), start: splitTime, end: s.end, duration: s.end - splitTime });
-        setSegments(ns);
-        break;
-      }
-      cum += s.duration;
+      if (localTime >= acc && localTime <= acc + segments[i].duration) return i;
+      acc += segments[i].duration;
     }
+    return -1;
+  };
+
+  const split = () => {
+    const activeIdx = getSegmentIndexAtLocalTime(currentTime);
+    if (activeIdx === -1) return;
+
+    const s = segments[activeIdx];
+    const localStart = getCumulativeDuration(activeIdx);
+    const splitPointInSource = s.start + (currentTime - localStart);
+
+    if (splitPointInSource <= s.start + 0.1 || splitPointInSource >= s.end - 0.1) return;
+
+    const ns = [...segments];
+    const colorIdx = (activeIdx + 1) % COLORS.length;
+    
+    ns.splice(activeIdx, 1, 
+      { ...s, end: splitPointInSource, duration: splitPointInSource - s.start },
+      { id: Math.random().toString(), start: splitPointInSource, end: s.end, duration: s.end - splitPointInSource, color: COLORS[colorIdx] }
+    );
+    setSegments(ns);
+  };
+
+  const deleteSegment = (id: string) => {
+    if (segments.length <= 1) return;
+    setSegments(segments.filter(s => s.id !== id));
+    setCurrentTime(0);
+    if (videoRef.current) videoRef.current.currentTime = segments[0].start;
+  };
+
+  const moveSegment = (idx: number, direction: 'left' | 'right') => {
+    const ns = [...segments];
+    const target = direction === 'left' ? idx - 1 : idx + 1;
+    if (target < 0 || target >= segments.length) return;
+    [ns[idx], ns[target]] = [ns[target], ns[idx]];
+    setSegments(ns);
   };
 
   const exportVid = async () => {
     setIsExporting(true);
+    setExportStatus('Preparing canvas...');
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d')!;
     const v = videoRef.current!;
@@ -430,6 +465,7 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
     
     return new Promise<void>((resolve) => {
       rec.onstop = async () => {
+        setExportStatus('Finalizing file...');
         await onSave(new Blob(chunks, { type: 'video/webm' }));
         setIsExporting(false);
         resolve();
@@ -438,13 +474,20 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
       rec.start();
 
       (async () => {
+        const fps = 30;
+        let totalFramesRendered = 0;
+        const totalDuration = segments.reduce((a, b) => a + b.duration, 0);
+        const totalFramesExpected = Math.floor(totalDuration * fps);
+
         for (const seg of segments) {
-          const fps = 30;
-          const totalFrames = Math.floor(seg.duration * fps);
-          for (let i = 0; i < totalFrames; i++) {
+          const segFrames = Math.floor(seg.duration * fps);
+          setExportStatus(`Processing clip: ${formatDuration(seg.duration)}`);
+          for (let i = 0; i < segFrames; i++) {
             v.currentTime = seg.start + (i / fps);
             await new Promise(r => { v.onseeked = r; });
             ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+            totalFramesRendered++;
+            setExportProgress(Math.floor((totalFramesRendered / totalFramesExpected) * 100));
           }
         }
         setTimeout(() => rec.stop(), 500);
@@ -452,42 +495,105 @@ const VideoEditor: React.FC<{ session: any; onClose: () => void; onSave: (b: Blo
     });
   };
 
+  const totalEditorDuration = segments.reduce((a, b) => a + b.duration, 0);
+
   return (
-    <div className="fixed inset-0 z-[110] bg-black flex flex-col p-4 animate-in fade-in duration-300">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-black uppercase tracking-tighter flex items-center gap-2"><Scissors className="w-5 h-5" /> Editor: {session.id}</h2>
-        <button onClick={onClose} className="p-2 border border-white/20 rounded-full hover:bg-white/10 transition-colors"><X /></button>
-      </div>
-      <div className="flex-grow bg-white/5 border border-white/10 flex items-center justify-center relative overflow-hidden group">
-        <video ref={videoRef} src={videoUrl} onTimeUpdate={() => {
-          if(!videoRef.current) return;
-          let cum = 0;
-          const v = videoRef.current;
-          const seg = segments.find((s, idx) => {
-             const startsAt = segments.slice(0, idx).reduce((acc, x) => acc + x.duration, 0);
-             if (v.currentTime >= s.start && v.currentTime <= s.end + 0.1) { cum = startsAt; return true; }
-             return false;
-          });
-          if (seg) setCurrentTime(cum + (v.currentTime - seg.start));
-        }} className="max-w-full max-h-full block" style={{ objectFit: 'contain' }} />
-        {isExporting && <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-50 backdrop-blur-md">
-          <Loader2 className="animate-spin mb-4 w-12 h-12 text-white" />
-          <p className="font-bold tracking-[0.3em] uppercase text-sm animate-pulse">Rendering Final Master...</p>
-        </div>}
-      </div>
-      <div className="mt-4 flex gap-4 items-center">
-        <button onClick={() => videoRef.current?.paused ? videoRef.current.play() : videoRef.current?.pause()} className="p-4 bg-white text-black hover:bg-gray-200 transition-colors active:scale-95 shadow-xl">
-          <Play className="fill-current w-6 h-6" />
-        </button>
-        <div className="flex-grow h-14 bg-white/10 relative overflow-hidden border border-white/5 cursor-pointer">
-          <div className="absolute inset-0 flex">
-             {segments.map((s, idx) => <div key={s.id} style={{ width: `${(s.duration / segments.reduce((a,b)=>a+b.duration, 0)) * 100}%` }} className={`h-full border-r border-black/50 ${idx % 2 === 0 ? 'bg-white/10' : 'bg-white/5'}`} />)}
-          </div>
-          <div style={{ left: `${(currentTime / segments.reduce((a,b)=>a+b.duration, 0)) * 100}%` }} className="absolute top-0 bottom-0 w-1 bg-red-600 shadow-[0_0_15px_rgba(220,38,38,0.8)] z-10" />
+    <div className="fixed inset-0 z-[110] bg-black flex flex-col p-4 animate-in slide-in-from-bottom duration-500">
+      <div className="flex justify-between items-center mb-4 px-2">
+        <h2 className="text-xl font-black uppercase tracking-tighter flex items-center gap-2 text-white/90">
+          <Scissors className="w-5 h-5 text-red-500" /> Sequence Editor
+        </h2>
+        <div className="flex gap-4 items-center">
+           <span className="text-xs font-mono text-white/40 uppercase tracking-widest">Total: {formatDuration(totalEditorDuration)}</span>
+           <button onClick={onClose} className="p-2 border border-white/10 rounded-full hover:bg-white/10 transition-colors"><X className="w-5 h-5" /></button>
         </div>
-        <button onClick={exportVid} disabled={isExporting} className="px-10 py-4 bg-white text-black font-black uppercase tracking-widest hover:bg-gray-200 active:scale-[0.98] transition-all">Save Final</button>
       </div>
-      <div className="mt-2 text-[10px] text-white/30 uppercase font-black tracking-[0.2em] text-center italic">Press 'S' to split segment at current playhead position</div>
+
+      <div className="flex-grow bg-[#050505] border border-white/5 flex items-center justify-center relative overflow-hidden rounded-xl shadow-inner group">
+        <video 
+          ref={videoRef} 
+          src={videoUrl} 
+          onTimeUpdate={() => {
+            if(!videoRef.current) return;
+            const v = videoRef.current;
+            const activeIdx = segments.findIndex(s => v.currentTime >= s.start && v.currentTime <= s.end + 0.05);
+            if (activeIdx !== -1) {
+              const cum = getCumulativeDuration(activeIdx);
+              setCurrentTime(cum + (v.currentTime - segments[activeIdx].start));
+            }
+          }}
+          className="max-w-full max-h-full block shadow-2xl" 
+          style={{ objectFit: 'contain' }} 
+        />
+        
+        {isExporting && (
+          <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center z-50 backdrop-blur-xl">
+            <div className="w-64 space-y-4">
+              <div className="flex justify-between text-[10px] font-black uppercase tracking-widest text-white/40">
+                <span>{exportStatus}</span>
+                <span>{exportProgress}%</span>
+              </div>
+              <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                <div style={{ width: `${exportProgress}%` }} className="h-full bg-white transition-all duration-300" />
+              </div>
+              <p className="text-center font-bold text-xs uppercase tracking-widest text-white animate-pulse">Rendering Sequence</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6 flex flex-col gap-6 bg-black p-4 rounded-xl border border-white/5">
+        <div className="flex gap-4 items-center">
+          <button 
+            onClick={() => videoRef.current?.paused ? videoRef.current.play() : videoRef.current?.pause()} 
+            className="p-4 bg-white text-black hover:bg-gray-200 transition-all active:scale-90 shadow-lg rounded-lg"
+          >
+            <Play className="fill-current w-6 h-6" />
+          </button>
+          
+          <div className="flex-grow h-20 bg-white/[0.02] relative overflow-hidden border border-white/5 rounded-lg group/timeline">
+            <div className="absolute inset-0 flex">
+              {segments.map((s, idx) => (
+                <div 
+                  key={s.id} 
+                  style={{ width: `${(s.duration / totalEditorDuration) * 100}%` }} 
+                  className={`h-full border-r border-black/40 relative group/seg transition-all ${s.color}`}
+                >
+                  <div className="absolute inset-0 opacity-0 group-hover/seg:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1 bg-black/40 backdrop-blur-sm z-20">
+                    <div className="flex gap-1">
+                      <button onClick={(e) => { e.stopPropagation(); moveSegment(idx, 'left'); }} className="p-1 hover:bg-white/20 rounded"><ChevronLeft className="w-3 h-3" /></button>
+                      <button onClick={(e) => { e.stopPropagation(); deleteSegment(s.id); }} className="p-1 hover:bg-red-500 rounded"><Trash2 className="w-3 h-3" /></button>
+                      <button onClick={(e) => { e.stopPropagation(); moveSegment(idx, 'right'); }} className="p-1 hover:bg-white/20 rounded"><ChevronRight className="w-3 h-3" /></button>
+                    </div>
+                  </div>
+                  <span className="absolute top-1 left-1 text-[8px] font-black uppercase tracking-tighter opacity-40">{formatDuration(s.duration)}</span>
+                </div>
+              ))}
+            </div>
+            
+            <div 
+              style={{ left: `${(currentTime / totalEditorDuration) * 100}%` }} 
+              className="absolute top-0 bottom-0 w-0.5 bg-red-600 shadow-[0_0_15px_rgba(220,38,38,1)] z-30 pointer-events-none" 
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <button onClick={split} className="px-4 py-2 border border-white/10 hover:bg-white/10 text-[10px] font-black uppercase tracking-widest flex items-center gap-2 rounded">
+              <Scissors className="w-3 h-3" /> Split (S)
+            </button>
+            <button onClick={() => { setSegments([{ id: '1', start: 0, end: session.durationSeconds, duration: session.durationSeconds, color: COLORS[0] }]); }} className="px-4 py-2 border border-white/10 hover:bg-white/10 text-[10px] font-black uppercase tracking-widest flex items-center gap-2 rounded text-white/40">
+              <RotateCcw className="w-3 h-3" /> Reset
+            </button>
+          </div>
+        </div>
+
+        <div className="flex justify-between items-center px-2">
+           <p className="text-[10px] text-white/20 uppercase font-black tracking-[0.2em] italic">Timeline: Rearrange, split, and cull segments to build your sequence</p>
+           <button onClick={exportVid} disabled={isExporting} className="px-12 py-4 bg-white text-black font-black uppercase tracking-[0.2em] hover:bg-gray-200 active:scale-95 transition-all rounded shadow-2xl">
+             Export Final
+           </button>
+        </div>
+      </div>
     </div>
   );
 };
@@ -497,49 +603,41 @@ const LibraryCard: React.FC<{ session: any; onDelete: (id: string) => void; onPr
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
 
   const handleDownloadWebm = () => {
-    // Creating a fresh URL for the download prevents issues where the memoized preview URL
-    // might have been "interrupted" or invalidated by a React cycle during the download trigger.
     const downloadUrl = URL.createObjectURL(session.videoBlob);
     triggerDownload(downloadUrl, `${session.id}.webm`);
-    // Revoke the temporary download URL after a safe delay
     setTimeout(() => URL.revokeObjectURL(downloadUrl), 5000);
   };
 
   return (
-    <div className="border border-white/10 p-5 flex flex-col md:flex-row gap-6 bg-white/[0.01] hover:bg-white/[0.03] hover:border-white/30 transition-all group relative overflow-hidden">
-      <div className={`bg-black md:w-52 overflow-hidden border border-white/10 cursor-pointer relative transition-transform group-hover:scale-[1.02] ${session.layoutStyle === 'SHORTS' ? 'aspect-[9/16]' : 'aspect-video'}`} onClick={() => onPreview(session)}>
+    <div className="border border-white/10 p-5 flex flex-col md:flex-row gap-6 bg-white/[0.01] hover:bg-white/[0.03] hover:border-white/30 transition-all group relative overflow-hidden rounded-lg">
+      <div className={`bg-black md:w-52 overflow-hidden border border-white/10 cursor-pointer relative transition-transform group-hover:scale-[1.02] rounded ${session.layoutStyle === 'SHORTS' ? 'aspect-[9/16]' : 'aspect-video'}`} onClick={() => onPreview(session)}>
         <video src={url} muted className="w-full h-full object-cover opacity-40 group-hover:opacity-100 transition-opacity" />
         <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40 backdrop-blur-[2px]">
            <Play className="fill-white w-10 h-10 drop-shadow-2xl" />
-        </div>
-        <div className="absolute top-1 right-1 bg-black/80 text-[8px] font-bold px-1 py-0.5 border border-white/10 uppercase tracking-tighter">
-          {formatDuration(session.durationSeconds)}
         </div>
       </div>
       <div className="flex-grow space-y-4">
         <div className="flex justify-between items-start">
           <div className="space-y-1">
             <h3 className="font-mono font-bold text-xl tracking-tighter group-hover:text-white transition-colors">{session.id}</h3>
-            <p className="text-[10px] text-white/30 uppercase tracking-[0.2em] font-bold">{new Date(session.createdAtISO).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</p>
+            <p className="text-[10px] text-white/30 uppercase tracking-[0.2em] font-bold">{new Date(session.createdAtISO).toLocaleDateString()}</p>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => onZip(session)} className="p-2.5 border border-white/10 hover:border-white/40 hover:bg-white/10 transition-all rounded-sm" title="Export Full ZIP"><Archive className="w-4 h-4" /></button>
-            <button onClick={handleDownloadWebm} className="p-2.5 border border-white/10 hover:border-white/40 hover:bg-white/10 transition-all rounded-sm" title="Download Source WebM"><Download className="w-4 h-4" /></button>
-            <button onClick={() => onDelete(session.id)} className="p-2.5 border border-red-600/20 text-red-500 hover:bg-red-600 hover:text-white transition-all rounded-sm" title="Delete Permanent"><Trash2 className="w-4 h-4" /></button>
+            <button onClick={() => onZip(session)} className="p-2.5 border border-white/10 hover:border-white/40 hover:bg-white/10 transition-all rounded" title="Export Full ZIP"><Archive className="w-4 h-4" /></button>
+            <button onClick={handleDownloadWebm} className="p-2.5 border border-white/10 hover:border-white/40 hover:bg-white/10 transition-all rounded" title="Download WebM"><Download className="w-4 h-4" /></button>
+            <button onClick={() => onDelete(session.id)} className="p-2.5 border border-red-600/20 text-red-500 hover:bg-red-600 hover:text-white transition-all rounded" title="Delete"><Trash2 className="w-4 h-4" /></button>
           </div>
         </div>
         <div className="flex flex-wrap gap-2 text-[10px] text-white/50 uppercase font-black tracking-widest">
           <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-sm flex items-center gap-1.5"><Monitor className="w-3 h-3" /> {session.layoutStyle}</span>
+          <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-sm">{formatDuration(session.durationSeconds)}</span>
           <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-sm">{session.quality.resolution}</span>
-          <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-sm">{session.quality.fps} FPS</span>
-          <span className="bg-white/5 border border-white/5 px-2 py-1 rounded-sm">WEBM</span>
         </div>
         <div className="flex gap-4 pt-2">
-          <button onClick={() => onEdit(session)} className="px-6 py-2.5 border border-white/10 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white hover:text-black hover:border-white transition-all flex items-center gap-2 active:scale-95 shadow-lg"><Scissors className="w-3.5 h-3.5" /> Edit Master</button>
-          <button onClick={() => onPreview(session)} className="px-6 py-2.5 border border-white/10 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all flex items-center gap-2 active:scale-95 shadow-lg"><Maximize2 className="w-3.5 h-3.5" /> Preview</button>
+          <button onClick={() => onEdit(session)} className="px-6 py-2.5 border border-white/10 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white hover:text-black hover:border-white transition-all flex items-center gap-2 active:scale-95 shadow-lg rounded"><Scissors className="w-3.5 h-3.5" /> Edit Master</button>
+          <button onClick={() => onPreview(session)} className="px-6 py-2.5 border border-white/10 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all flex items-center gap-2 active:scale-95 rounded"><Maximize2 className="w-3.5 h-3.5" /> Preview</button>
         </div>
       </div>
-      <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-white/5 rounded-full blur-3xl opacity-0 group-hover:opacity-20 transition-opacity"></div>
     </div>
   );
 };
