@@ -55,6 +55,13 @@ Then run using "npm run dev" and open in localhost and follow the instructions:
 3. For OFFLINE AI Audio Transcription Install OpenAI Whisper: `pip install -U openai-whisper`
 4. Run (After you separate the audio from the file - try it with the mp4, should work): `whisper "audio.mp3" --model medium --output_format txt,srt`
 
+## Additional Notes from Eric Knaus (https://www.linkedin.com/in/ericknaus/) Thanks Eric!
+Also my install procedure was a bit different but I logged it for you:
+* I had to navigate to DecDecRec > DecDecRec-Tool, and run `npm init --yes` to reconstruct the package.json file.
+* Then I ran `npm i` to connect the package.json to npm.
+* Then I could run `npm run dev`.
+* I have something else running on port 3000 so this ran on the next available port above 3000.
+
 ## License
 MIT License. Copyright (c) 2025 Solomon Christ (www.solomonchrist.com).
 
